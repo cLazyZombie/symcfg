@@ -1,0 +1,18 @@
+target/
+
+# 커버리지 산출물
+coverage/
+coverage-*.json
+lcov.info
+*.profraw
+*.profdata
+
+# 로컬 임시 파일
+.DS_Store
+*.swp
+*.swo
+*~
+.tmp/
+tmp/
+.env
+.env.*
