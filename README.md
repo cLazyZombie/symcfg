@@ -32,7 +32,7 @@
 
 ```sh
 cd ~/config
-symcfg search --in ~/.config
+symcfg search ~/.config
 symcfg apply --yes
 ```
 
@@ -49,7 +49,7 @@ cargo build --release
 ## 명령
 
 ```sh
-symcfg search --in <link-root>... [--source <source-root>] [-o symbolic.json]
+symcfg search <link-root>... [--source <source-root>] [-o symbolic.json]
 ```
 
 `link-root` 아래에서 `source-root` 아래 원본을 가리키는 심볼릭 링크를 찾아 설정 파일에 추가합니다. `--source` 기본값은 `.`입니다.
@@ -73,10 +73,10 @@ symcfg list [-c symbolic.json]
 설정 항목을 `status<TAB>link<TAB>src` 형식으로 한 줄에 하나씩 출력합니다. 상태는 `linked`, `missing`, `conflict` 중 하나입니다.
 
 ```sh
-symcfg sync [--source <source-root>] [-c symbolic.json] [-y] [--delete-links|--keep-links]
+symcfg sync [source-root] [-c symbolic.json] [-y] [--delete-links|--keep-links]
 ```
 
-`source-root` 아래의 사라진 `src` 항목을 설정 파일에서 제거합니다. `--delete-links`는 기록된 `src`를 가리키는 심볼릭 링크만 삭제합니다.
+`source-root` 아래의 사라진 `src` 항목을 설정 파일에서 제거합니다. `source-root` 기본값은 `.`입니다. `--delete-links`는 기록된 `src`를 가리키는 심볼릭 링크만 삭제합니다.
 
 ```sh
 symcfg validate [-c symbolic.json]

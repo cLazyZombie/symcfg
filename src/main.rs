@@ -19,7 +19,7 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     Search {
-        #[arg(long = "in", required = true, num_args = 1..)]
+        #[arg(required = true, num_args = 1..)]
         link_roots: Vec<PathBuf>,
 
         #[arg(long = "source", default_value = ".")]
@@ -50,7 +50,7 @@ enum Command {
         config: PathBuf,
     },
     Sync {
-        #[arg(long = "source", default_value = ".")]
+        #[arg(default_value = ".")]
         source_root: PathBuf,
 
         #[arg(short = 'c', long = "config", default_value = DEFAULT_CONFIG_FILENAME)]

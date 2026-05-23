@@ -114,7 +114,6 @@ fn search_writes_default_symbolic_json_with_link_and_src_entries() {
             "search",
             "--source",
             source_root.to_str().expect("utf-8 source path"),
-            "--in",
             link_root.to_str().expect("utf-8 link path"),
         ])
         .assert()
@@ -144,7 +143,6 @@ fn search_writes_custom_output_path() {
             "search",
             "--source",
             source_root.to_str().expect("utf-8 source path"),
-            "--in",
             link_root.to_str().expect("utf-8 link path"),
             "--output",
             custom_config.to_str().expect("utf-8 config path"),
@@ -459,10 +457,9 @@ fn sync_yes_without_delete_policy_fails_with_english_error() {
         .current_dir(temp.path())
         .args([
             "sync",
+            source_root.to_str().expect("utf-8 source path"),
             "--config",
             config.to_str().expect("utf-8 config path"),
-            "--source",
-            source_root.to_str().expect("utf-8 source path"),
             "--yes",
         ])
         .assert()
@@ -487,10 +484,9 @@ fn sync_keep_links_removes_stale_entries_keeps_link_and_prints_summary() {
         .current_dir(temp.path())
         .args([
             "sync",
+            source_root.to_str().expect("utf-8 source path"),
             "--config",
             config.to_str().expect("utf-8 config path"),
-            "--source",
-            source_root.to_str().expect("utf-8 source path"),
             "--yes",
             "--keep-links",
         ])
@@ -529,10 +525,9 @@ fn sync_delete_links_removes_stale_entries_and_deletes_only_matching_symlink() {
         .current_dir(temp.path())
         .args([
             "sync",
+            source_root.to_str().expect("utf-8 source path"),
             "--config",
             config.to_str().expect("utf-8 config path"),
-            "--source",
-            source_root.to_str().expect("utf-8 source path"),
             "--yes",
             "--delete-links",
         ])
@@ -660,10 +655,9 @@ fn sync_prompts_in_english_for_stale_link_delete_and_accepts_yes_on_stdin() {
         .current_dir(temp.path())
         .args([
             "sync",
+            source_root.to_str().expect("utf-8 source path"),
             "--config",
             config.to_str().expect("utf-8 config path"),
-            "--source",
-            source_root.to_str().expect("utf-8 source path"),
         ])
         .write_stdin("y\n")
         .assert()
@@ -698,10 +692,9 @@ fn sync_prompts_for_stale_link_and_declines_no_on_stdin() {
         .current_dir(temp.path())
         .args([
             "sync",
+            source_root.to_str().expect("utf-8 source path"),
             "--config",
             config.to_str().expect("utf-8 config path"),
-            "--source",
-            source_root.to_str().expect("utf-8 source path"),
         ])
         .write_stdin("n\n")
         .assert()
@@ -735,10 +728,9 @@ fn sync_delete_links_without_yes_fails_instead_of_ignoring_confirmation() {
         .current_dir(temp.path())
         .args([
             "sync",
+            source_root.to_str().expect("utf-8 source path"),
             "--config",
             config.to_str().expect("utf-8 config path"),
-            "--source",
-            source_root.to_str().expect("utf-8 source path"),
             "--delete-links",
         ])
         .write_stdin("y\n")
@@ -767,10 +759,9 @@ fn sync_keep_links_without_yes_fails_instead_of_ignoring_confirmation() {
         .current_dir(temp.path())
         .args([
             "sync",
+            source_root.to_str().expect("utf-8 source path"),
             "--config",
             config.to_str().expect("utf-8 config path"),
-            "--source",
-            source_root.to_str().expect("utf-8 source path"),
             "--keep-links",
         ])
         .write_stdin("y\n")
