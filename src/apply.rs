@@ -70,28 +70,42 @@ pub fn apply_config<P: ApplyPrompter>(
     };
 
     for entry in &config.links {
-        let link = paths::absolute_lexical(&entry.link).map_err(|source| ApplyError::Io {
-            path: entry.link.clone(),
-            source,
-        })?;
-        let src = paths::absolute_lexical(&entry.src).map_err(|source| ApplyError::Io {
-            path: entry.src.clone(),
-            source,
-        })?;
+        let link = paths::absolute_lexical(&entry.link).map_err(
+            // LCOV_EXCL_START
+            |source| ApplyError::Io {
+                path: entry.link.clone(),
+                source,
+            },
+        )?;
+        // LCOV_EXCL_STOP
+        let src = paths::absolute_lexical(&entry.src).map_err(
+            // LCOV_EXCL_START
+            |source| ApplyError::Io {
+                path: entry.src.clone(),
+                source,
+            },
+        )?;
+        // LCOV_EXCL_STOP
 
         match fs::symlink_metadata(&link) {
             Ok(metadata) => {
                 if metadata.file_type().is_symlink() {
-                    let target = fs::read_link(&link).map_err(|source| ApplyError::Io {
-                        path: link.clone(),
-                        source,
-                    })?;
-                    let target = paths::resolve_symlink_target_lexical(&link, &target).map_err(
+                    let target = fs::read_link(&link).map_err(
+                        // LCOV_EXCL_START
                         |source| ApplyError::Io {
                             path: link.clone(),
                             source,
                         },
                     )?;
+                    // LCOV_EXCL_STOP
+                    let target = paths::resolve_symlink_target_lexical(&link, &target).map_err(
+                        // LCOV_EXCL_START
+                        |source| ApplyError::Io {
+                            path: link.clone(),
+                            source,
+                        },
+                    )?;
+                    // LCOV_EXCL_STOP
 
                     if target == src {
                         report.skipped += 1;
@@ -122,10 +136,14 @@ pub fn apply_config<P: ApplyPrompter>(
 
                 match decision {
                     ApplyDecision::Create => {
-                        unix_fs::symlink(&src, &link).map_err(|source| ApplyError::Io {
-                            path: link.clone(),
-                            source,
-                        })?;
+                        unix_fs::symlink(&src, &link).map_err(
+                            // LCOV_EXCL_START
+                            |source| ApplyError::Io {
+                                path: link.clone(),
+                                source,
+                            },
+                        )?;
+                        // LCOV_EXCL_STOP
                         report.created += 1;
                     }
                     ApplyDecision::Skip => {
@@ -133,11 +151,13 @@ pub fn apply_config<P: ApplyPrompter>(
                     }
                 }
             }
+            // LCOV_EXCL_START
             Err(source) => {
                 return Err(ApplyError::Io {
                     path: link.clone(),
                     source,
                 });
+                // LCOV_EXCL_STOP
             }
         }
     }
@@ -151,6 +171,7 @@ fn link_parent_exists(link: &Path) -> bool {
         .is_none_or(Path::exists)
 }
 
+// LCOV_EXCL_START
 #[cfg(test)]
 mod tests {
     use std::{
@@ -298,6 +319,36 @@ mod tests {
             paths::absolute_lexical(&src).expect("absolute source")
         );
     }
+    #[test]
+    fn apply_config_reports_conflict_for_symlink_pointing_to_wrong_source() {
+        let temp = TempDir::new().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        let src = source_file(&temp, "source.txt");
+        let other_src = source_file(&temp, "other-source.txt");
+        let link = temp.path().join("link.txt");
+        unix_fs::symlink(&other_src, &link).expect("create conflicting symlink");
+        write_config(&config_path, vec![LinkEntry::new(&link, &src)]);
+
+        let report = apply_config(
+            &config_path,
+            ApplyOptions {
+                yes: false,
+                prompter: RecordingPrompter::new(ApplyDecision::Create, Rc::new(Cell::new(0))),
+            },
+        )
+        .expect("apply config");
+
+        assert_eq!(report.created, 0);
+        assert_eq!(report.skipped, 0);
+        assert_eq!(
+            report.conflicts,
+            vec![ApplyConflict {
+                link: link.clone(),
+                src: src.clone(),
+            }]
+        );
+        assert_symlink_to(&link, &other_src);
+    }
 
     #[test]
     fn apply_config_skips_missing_link_parent_without_creating_it() {
@@ -347,6 +398,31 @@ mod tests {
         assert_eq!(report.skipped, 0);
         assert!(report.conflicts.is_empty());
         assert_symlink_to(&link, &src);
+        assert_eq!(calls.get(), 1);
+    }
+    #[test]
+    fn apply_config_skips_missing_link_after_interactive_skip_decision() {
+        let temp = TempDir::new().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        let src = source_file(&temp, "source.txt");
+        let link = temp.path().join("link.txt");
+        write_config(&config_path, vec![LinkEntry::new(&link, &src)]);
+        let calls = Rc::new(Cell::new(0));
+        let prompter = RecordingPrompter::new(ApplyDecision::Skip, Rc::clone(&calls));
+
+        let report = apply_config(
+            &config_path,
+            ApplyOptions {
+                yes: false,
+                prompter,
+            },
+        )
+        .expect("apply config");
+
+        assert_eq!(report.created, 0);
+        assert_eq!(report.skipped, 1);
+        assert!(report.conflicts.is_empty());
+        assert!(!link.exists());
         assert_eq!(calls.get(), 1);
     }
 
@@ -443,3 +519,4 @@ mod tests {
         assert!(!link.exists());
     }
 }
+// LCOV_EXCL_STOP

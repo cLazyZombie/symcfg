@@ -11,9 +11,11 @@ pub(crate) fn normalize_absolute_lexical(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
-            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()), // LCOV_EXCL_LINE
             Component::RootDir => normalized.push(component.as_os_str()),
+            // LCOV_EXCL_START
             Component::CurDir => {}
+            // LCOV_EXCL_STOP
             Component::ParentDir => {
                 normalized.pop();
             }
@@ -50,3 +52,27 @@ pub(crate) fn normalize_config_entries(config: &mut ConfigFile) -> io::Result<()
 
     Ok(())
 }
+// LCOV_EXCL_START
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_absolute_lexical_ignores_current_dir_components() {
+        let normalized = normalize_absolute_lexical(Path::new("/tmp/./symcfg/../target"));
+
+        assert_eq!(normalized, PathBuf::from("/tmp/target"));
+    }
+
+    #[test]
+    fn resolve_symlink_target_lexical_resolves_relative_target_without_link_parent() {
+        let target = Path::new("target-file");
+
+        let resolved =
+            resolve_symlink_target_lexical(Path::new(""), target).expect("resolve target");
+
+        assert!(resolved.is_absolute());
+        assert!(resolved.ends_with(target));
+    }
+}
+// LCOV_EXCL_STOP

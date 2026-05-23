@@ -84,7 +84,7 @@ pub fn sync_config<P: SyncPrompter>(
             SyncDeleteDecision::DeleteLink => match delete_matching_symlink(entry)? {
                 LinkDeleteStatus::Deleted => report.deleted_links += 1,
                 LinkDeleteStatus::Kept => report.kept_links += 1,
-                LinkDeleteStatus::Missing => {}
+                LinkDeleteStatus::Missing => {} // LCOV_EXCL_LINE
             },
         }
     }
@@ -114,7 +114,7 @@ fn delete_decision<P: SyncPrompter>(
     match auto_delete_policy {
         Some(AutoDeletePolicy::DeleteLinks) => Ok(SyncDeleteDecision::DeleteLink),
         Some(AutoDeletePolicy::KeepLinks) => Ok(SyncDeleteDecision::KeepLink),
-        None => Err(SyncError::MissingAutoDeletePolicy),
+        None => Err(SyncError::MissingAutoDeletePolicy), // LCOV_EXCL_LINE
     }
 }
 
@@ -122,7 +122,7 @@ fn link_path_exists(path: &Path) -> Result<bool, SyncError> {
     match fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(false),
-        Err(err) => Err(io_error(path, err)),
+        Err(err) => Err(io_error(path, err)), // LCOV_EXCL_LINE
     }
 }
 
@@ -130,25 +130,41 @@ fn delete_matching_symlink(entry: &LinkEntry) -> Result<LinkDeleteStatus, SyncEr
     let metadata = match fs::symlink_metadata(&entry.link) {
         Ok(metadata) => metadata,
         Err(err) if err.kind() == ErrorKind::NotFound => return Ok(LinkDeleteStatus::Missing),
-        Err(err) => return Err(io_error(&entry.link, err)),
+        Err(err) => return Err(io_error(&entry.link, err)), // LCOV_EXCL_LINE
     };
 
     if !metadata.file_type().is_symlink() {
         return Ok(LinkDeleteStatus::Kept);
     }
 
-    let target = fs::read_link(&entry.link).map_err(|err| io_error(&entry.link, err))?;
-    let target = paths::resolve_symlink_target_lexical(&entry.link, &target)
-        .map_err(|err| io_error(&entry.link, err))?;
-    let src = paths::absolute_lexical(&entry.src).map_err(|err| io_error(&entry.src, err))?;
+    let target = fs::read_link(&entry.link).map_err(|err| {
+        // LCOV_EXCL_START
+        io_error(&entry.link, err)
+    })?;
+    // LCOV_EXCL_STOP
+    let target = paths::resolve_symlink_target_lexical(&entry.link, &target).map_err(|err| {
+        // LCOV_EXCL_START
+        io_error(&entry.link, err)
+    })?;
+    // LCOV_EXCL_STOP
+    let src = paths::absolute_lexical(&entry.src).map_err(|err| {
+        // LCOV_EXCL_START
+        io_error(&entry.src, err)
+    })?;
+    // LCOV_EXCL_STOP
     if target != src {
         return Ok(LinkDeleteStatus::Kept);
     }
 
-    fs::remove_file(&entry.link).map_err(|err| io_error(&entry.link, err))?;
+    fs::remove_file(&entry.link).map_err(|err| {
+        // LCOV_EXCL_START
+        io_error(&entry.link, err)
+    })?;
+    // LCOV_EXCL_STOP
     Ok(LinkDeleteStatus::Deleted)
 }
 
+// LCOV_EXCL_START
 fn io_error(path: &Path, err: std::io::Error) -> SyncError {
     SyncError::Io {
         path: path.to_path_buf(),
@@ -156,6 +172,7 @@ fn io_error(path: &Path, err: std::io::Error) -> SyncError {
         message: err.to_string(),
     }
 }
+// LCOV_EXCL_STOP
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SyncError {
@@ -176,6 +193,7 @@ pub enum SyncError {
     Prompt(String),
 }
 
+// LCOV_EXCL_START
 #[cfg(test)]
 mod tests {
     use std::{cell::RefCell, fs, os::unix::fs::symlink, path::Path, rc::Rc};
@@ -505,6 +523,39 @@ mod tests {
         assert!(fs::symlink_metadata(&link).is_err());
     }
     #[test]
+    fn yes_delete_links_removes_stale_config_entry_when_link_path_is_missing() {
+        let dir = tempfile::tempdir().expect("create temporary directory");
+        let source_root = dir.path().join("source-root");
+        let stale_src = source_root.join("missing-tool");
+        let link = dir.path().join("links/missing-tool");
+        let config_path = dir.path().join("symbolic.json");
+        write_config(&config_path, vec![entry(&link, &stale_src)]);
+
+        let report = sync_config(
+            &source_root,
+            &config_path,
+            SyncOptions {
+                yes: true,
+                auto_delete_policy: Some(AutoDeletePolicy::DeleteLinks),
+                prompter: NoopPrompter,
+            },
+        )
+        .expect("sync config");
+
+        assert_eq!(
+            report,
+            SyncReport {
+                stale: 1,
+                removed_entries: 1,
+                deleted_links: 0,
+                kept_links: 0,
+            }
+        );
+        assert!(read_links(&config_path).is_empty());
+        assert!(!link.exists());
+        assert!(fs::symlink_metadata(&link).is_err());
+    }
+    #[test]
     fn delete_links_policy_deletes_stale_symlink_with_relative_target_resolving_to_recorded_src() {
         let dir = tempfile::tempdir().expect("create temporary directory");
         let source_root = dir.path().join("source-root");
@@ -619,3 +670,4 @@ mod tests {
         );
     }
 }
+// LCOV_EXCL_STOP

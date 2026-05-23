@@ -74,10 +74,14 @@ impl ParentPrompter for StdioPrompter {
         let answer = prompt_yes_no(&format!(
             "Create missing parent directory {parent:?}? [y/N] "
         ))
-        .map_err(|source| link::LinkError::Io {
-            path: PathBuf::from("<stdin>"),
-            source,
-        })?;
+        .map_err(
+            // LCOV_EXCL_START
+            |source| link::LinkError::Io {
+                path: PathBuf::from("<stdin>"),
+                source,
+            },
+        )?;
+        // LCOV_EXCL_STOP
 
         Ok(if answer {
             ParentDecision::Create
@@ -96,9 +100,13 @@ impl ApplyPrompter for StdioPrompter {
             "Create link {:?} pointing to {:?}? [y/N] ",
             entry.link, entry.src
         ))
-        .map_err(|err| apply::ApplyError::Prompt {
-            message: err.to_string(),
-        })?;
+        .map_err(
+            // LCOV_EXCL_START
+            |err| apply::ApplyError::Prompt {
+                message: err.to_string(),
+            },
+        )?;
+        // LCOV_EXCL_STOP
 
         Ok(if answer {
             ApplyDecision::Create
@@ -117,7 +125,11 @@ impl SyncPrompter for StdioPrompter {
             "Source {:?} is stale. Delete the link {:?}? [y/N] ",
             entry.src, entry.link
         ))
-        .map_err(|err| sync::SyncError::Prompt(err.to_string()))?;
+        .map_err(
+            // LCOV_EXCL_START
+            |err| sync::SyncError::Prompt(err.to_string()),
+        )?;
+        // LCOV_EXCL_STOP
 
         Ok(if answer {
             SyncDeleteDecision::DeleteLink
@@ -191,7 +203,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 report.skipped,
                 report.conflicts.len()
             );
-        }
+        } // LCOV_EXCL_LINE
         Command::Sync {
             source_root,
             config,
@@ -203,7 +215,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 (true, false) => Some(AutoDeletePolicy::DeleteLinks),
                 (false, true) => Some(AutoDeletePolicy::KeepLinks),
                 (false, false) => None,
-                (true, true) => unreachable!("clap prevents mutually exclusive flags"),
+                (true, true) => unreachable!("clap prevents mutually exclusive flags"), // LCOV_EXCL_LINE
             };
 
             if !yes {

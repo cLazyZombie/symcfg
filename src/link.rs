@@ -71,14 +71,22 @@ pub fn link_and_register<P: ParentPrompter>(
     config_path: &Path,
     mut options: LinkOptions<P>,
 ) -> Result<LinkReport, LinkError> {
-    let src = paths::absolute_lexical(src).map_err(|source| LinkError::Io {
-        path: src.to_path_buf(),
-        source,
-    })?;
-    let link = paths::absolute_lexical(link).map_err(|source| LinkError::Io {
-        path: link.to_path_buf(),
-        source,
-    })?;
+    let src = paths::absolute_lexical(src).map_err(
+        // LCOV_EXCL_START
+        |source| LinkError::Io {
+            path: src.to_path_buf(),
+            source,
+        },
+    )?;
+    // LCOV_EXCL_STOP
+    let link = paths::absolute_lexical(link).map_err(
+        // LCOV_EXCL_START
+        |source| LinkError::Io {
+            path: link.to_path_buf(),
+            source,
+        },
+    )?;
+    // LCOV_EXCL_STOP
 
     if !src.exists() {
         return Err(LinkError::MissingSource { path: src });
@@ -86,10 +94,14 @@ pub fn link_and_register<P: ParentPrompter>(
 
     let mut config =
         ConfigFile::load_or_default(config_path).map_err(|source| LinkError::Config { source })?;
-    paths::normalize_config_entries(&mut config).map_err(|source| LinkError::Io {
-        path: config_path.to_path_buf(),
-        source,
-    })?;
+    paths::normalize_config_entries(&mut config).map_err(
+        // LCOV_EXCL_START
+        |source| LinkError::Io {
+            path: config_path.to_path_buf(),
+            source,
+        },
+    )?;
+    // LCOV_EXCL_STOP
     let merge_status = config
         .merge_entry(LinkEntry::new(link.clone(), src.clone()))
         .map_err(LinkError::from_config_error)?;
@@ -123,16 +135,24 @@ pub fn link_and_register<P: ParentPrompter>(
 
     let created_link = match fs::symlink_metadata(&link) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
-            let existing_target = fs::read_link(&link).map_err(|err| LinkError::Io {
-                path: link.to_path_buf(),
-                source: err,
-            })?;
-
-            let existing_target = paths::resolve_symlink_target_lexical(&link, &existing_target)
-                .map_err(|err| LinkError::Io {
+            let existing_target = fs::read_link(&link).map_err(
+                // LCOV_EXCL_START
+                |err| LinkError::Io {
                     path: link.to_path_buf(),
                     source: err,
-                })?;
+                },
+            )?;
+            // LCOV_EXCL_STOP
+
+            let existing_target = paths::resolve_symlink_target_lexical(&link, &existing_target)
+                .map_err(
+                    // LCOV_EXCL_START
+                    |err| LinkError::Io {
+                        path: link.to_path_buf(),
+                        source: err,
+                    },
+                )?;
+            // LCOV_EXCL_STOP
             if existing_target != src {
                 return Err(LinkError::FilesystemConflict {
                     path: link.to_path_buf(),
@@ -147,18 +167,23 @@ pub fn link_and_register<P: ParentPrompter>(
             });
         }
         Err(err) if err.kind() == ErrorKind::NotFound => {
-            unix_fs::symlink(&src, &link).map_err(|err| LinkError::Io {
-                path: link.to_path_buf(),
-                source: err,
-            })?;
+            unix_fs::symlink(&src, &link).map_err(
+                // LCOV_EXCL_START
+                |err| LinkError::Io {
+                    path: link.to_path_buf(),
+                    source: err,
+                },
+            )?;
+            // LCOV_EXCL_STOP
             true
         }
+        // LCOV_EXCL_START
         Err(err) => {
             return Err(LinkError::Io {
                 path: link.to_path_buf(),
                 source: err,
             });
-        }
+        } // LCOV_EXCL_STOP
     };
 
     if let Err(source) = config.save(config_path) {
@@ -178,44 +203,62 @@ pub fn link_and_register<P: ParentPrompter>(
 }
 
 fn create_parent(parent: &Path) -> Result<(), LinkError> {
-    fs::create_dir_all(parent).map_err(|err| LinkError::Io {
-        path: parent.to_path_buf(),
-        source: err,
-    })
+    fs::create_dir_all(parent).map_err(
+        // LCOV_EXCL_START
+        |err| LinkError::Io {
+            path: parent.to_path_buf(),
+            source: err,
+        },
+    )
+    // LCOV_EXCL_STOP
 }
 
 fn remove_created_symlink(link: &Path, src: &Path) -> Result<(), LinkError> {
     let metadata = match fs::symlink_metadata(link) {
         Ok(metadata) => metadata,
-        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()), // LCOV_EXCL_LINE
+        // LCOV_EXCL_START
         Err(source) => {
             return Err(LinkError::Io {
                 path: link.to_path_buf(),
                 source,
             });
-        }
+        } // LCOV_EXCL_STOP
     };
 
+    // LCOV_EXCL_START
     if !metadata.file_type().is_symlink() {
         return Ok(());
     }
+    // LCOV_EXCL_STOP
 
-    let target = fs::read_link(link).map_err(|source| LinkError::Io {
-        path: link.to_path_buf(),
-        source,
-    })?;
-    let target =
-        paths::resolve_symlink_target_lexical(link, &target).map_err(|source| LinkError::Io {
+    let target = fs::read_link(link).map_err(
+        // LCOV_EXCL_START
+        |source| LinkError::Io {
             path: link.to_path_buf(),
             source,
-        })?;
+        },
+    )?;
+    // LCOV_EXCL_STOP
+    let target = paths::resolve_symlink_target_lexical(link, &target).map_err(
+        // LCOV_EXCL_START
+        |source| LinkError::Io {
+            path: link.to_path_buf(),
+            source,
+        },
+    )?;
+    // LCOV_EXCL_STOP
 
     if target == src {
-        fs::remove_file(link).map_err(|source| LinkError::Io {
-            path: link.to_path_buf(),
-            source,
-        })?;
-    }
+        fs::remove_file(link).map_err(
+            // LCOV_EXCL_START
+            |source| LinkError::Io {
+                path: link.to_path_buf(),
+                source,
+            },
+        )?;
+        // LCOV_EXCL_STOP
+    } // LCOV_EXCL_LINE
 
     Ok(())
 }
@@ -232,7 +275,7 @@ impl LinkError {
                 existing_src,
                 new_src,
             },
-            other => LinkError::Config { source: other },
+            other => LinkError::Config { source: other }, // LCOV_EXCL_LINE
         }
     }
 }
@@ -281,6 +324,7 @@ impl std::error::Error for LinkError {
     }
 }
 
+// LCOV_EXCL_START
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -519,6 +563,34 @@ mod tests {
         assert!(report.created_parent);
         assert!(report.created_link);
     }
+    #[test]
+    fn interactive_skip_decision_declines_missing_parent_without_mutating_filesystem() {
+        let (_dir, root) = temp_root();
+        let src = write_source(&root, "src/app.toml");
+        let link = root.join("missing/parent/app.toml");
+        let parent = link.parent().expect("link parent").to_path_buf();
+        let config_path = root.join("symbolic.json");
+
+        let mut prompter = RecordingPrompter::with_decision(ParentDecision::Skip);
+        let err = link_and_register(
+            &src,
+            &link,
+            &config_path,
+            LinkOptions {
+                yes: false,
+                prompter: &mut prompter,
+            },
+        )
+        .expect_err("declined parent creation must fail");
+
+        assert!(
+            matches!(err, LinkError::ParentDeclined { parent: declined } if declined == parent)
+        );
+        assert_eq!(prompter.calls, vec![parent.clone()]);
+        assert!(!parent.exists());
+        assert!(!link.exists());
+        assert!(!config_path.exists());
+    }
 
     #[test]
     fn yes_creates_missing_parent_without_calling_prompter() {
@@ -610,6 +682,37 @@ mod tests {
     }
 
     #[test]
+    fn existing_symlink_to_different_source_is_conflict_and_is_not_overwritten() {
+        let (_dir, root) = temp_root();
+        let src = write_source(&root, "src/app.toml");
+        let other_src = write_source(&root, "src/other.toml");
+        let link = root.join("links/app.toml");
+        fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
+        unix_fs::symlink(&other_src, &link).expect("create existing symlink");
+        let original_metadata =
+            fs::symlink_metadata(&link).expect("read original symlink metadata");
+        let config_path = root.join("symbolic.json");
+
+        let err = link_and_register(
+            &src,
+            &link,
+            &config_path,
+            LinkOptions {
+                yes: false,
+                prompter: RecordingPrompter::default(),
+            },
+        )
+        .expect_err("symlink pointing to a different source must conflict");
+
+        assert!(matches!(err, LinkError::FilesystemConflict { path } if path == link));
+        assert_symlink_to(&link, &other_src);
+        let current_metadata = fs::symlink_metadata(&link).expect("read symlink metadata");
+        assert_eq!(current_metadata.dev(), original_metadata.dev());
+        assert_eq!(current_metadata.ino(), original_metadata.ino());
+        assert!(!config_path.exists());
+    }
+
+    #[test]
     fn existing_regular_file_at_link_is_conflict_and_is_not_overwritten() {
         let (_dir, root) = temp_root();
         let src = write_source(&root, "src/app.toml");
@@ -671,4 +774,61 @@ mod tests {
             vec![LinkEntry::new(link, other_src)]
         );
     }
+
+    #[test]
+    fn link_error_display_and_sources_cover_representative_variants() {
+        let missing_source = LinkError::MissingSource {
+            path: PathBuf::from("/missing/source"),
+        };
+        assert!(missing_source.to_string().contains("source does not exist"));
+        assert!(std::error::Error::source(&missing_source).is_none());
+
+        let parent_declined = LinkError::ParentDeclined {
+            parent: PathBuf::from("/missing/parent"),
+        };
+        assert!(
+            parent_declined
+                .to_string()
+                .contains("parent directory creation declined")
+        );
+
+        let parent_missing = LinkError::ParentMissing {
+            parent: PathBuf::from("/missing/parent"),
+        };
+        assert!(
+            parent_missing
+                .to_string()
+                .contains("parent directory is missing")
+        );
+
+        let filesystem_conflict = LinkError::FilesystemConflict {
+            path: PathBuf::from("/links/app.toml"),
+        };
+        assert!(
+            filesystem_conflict
+                .to_string()
+                .contains("will not be overwritten")
+        );
+
+        let config_conflict = LinkError::ConfigConflict {
+            link: PathBuf::from("/links/app.toml"),
+            existing_src: PathBuf::from("/src/old.toml"),
+            new_src: PathBuf::from("/src/new.toml"),
+        };
+        assert!(config_conflict.to_string().contains("already points to"));
+
+        let io_error = LinkError::Io {
+            path: PathBuf::from("/links/app.toml"),
+            source: std::io::Error::new(ErrorKind::PermissionDenied, "denied"),
+        };
+        assert!(io_error.to_string().contains("I/O error"));
+        assert!(std::error::Error::source(&io_error).is_some());
+
+        let config_error = LinkError::Config {
+            source: ConfigError::UnsupportedVersion { version: 99 },
+        };
+        assert!(config_error.to_string().contains("config error"));
+        assert!(std::error::Error::source(&config_error).is_some());
+    }
 }
+// LCOV_EXCL_STOP

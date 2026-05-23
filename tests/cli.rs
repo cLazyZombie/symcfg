@@ -205,6 +205,36 @@ fn link_prompts_in_english_for_missing_parent_and_accepts_yes_on_stdin() {
 }
 
 #[test]
+fn link_prompts_for_missing_parent_and_declines_no_on_stdin() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let config = temp.path().join("symbolic.json");
+    let src = temp.path().join("sources/gitconfig");
+    let link = temp.path().join("links/missing/gitconfig");
+    write_file(&src, "[user]\n\tname = Example\n");
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "link",
+            src.to_str().expect("utf-8 source path"),
+            link.to_str().expect("utf-8 link path"),
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+        ])
+        .write_stdin("n\n")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("Create").and(predicate::str::contains("parent")))
+        .stderr(predicate::str::contains(
+            "parent directory creation declined",
+        ));
+
+    assert!(!link.parent().expect("link parent").exists());
+    assert!(!link.exists());
+    assert!(!config.exists());
+}
+
+#[test]
 fn apply_yes_creates_missing_symlinks_and_prints_english_summary_counts() {
     let temp = TempDir::new().expect("create temporary directory");
     let config = temp.path().join("symbolic.json");
@@ -277,6 +307,35 @@ fn apply_prompts_in_english_before_creating_link_and_accepts_yes_on_stdin() {
         .stdout(predicate::str::contains("Create").and(predicate::str::contains("link")));
 
     assert_symlink_points_to(&link, &src);
+}
+
+#[test]
+fn apply_prompts_for_missing_link_and_declines_no_on_stdin() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let config = temp.path().join("symbolic.json");
+    let src = temp.path().join("sources/tmux.conf");
+    let link = temp.path().join("links/tmux.conf");
+    write_file(&src, "set -g mouse on\n");
+    write_config(&config, &[(&link, &src)]);
+    fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "apply",
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+        ])
+        .write_stdin("n\n")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Create link").and(predicate::str::contains(
+                "Apply complete: created=0, skipped=1, conflict=0",
+            )),
+        );
+
+    assert!(!link.exists());
 }
 
 #[test]
@@ -467,6 +526,43 @@ fn sync_prompts_in_english_for_stale_link_delete_and_accepts_yes_on_stdin() {
 }
 
 #[test]
+fn sync_prompts_for_stale_link_and_declines_no_on_stdin() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let source_root = temp.path().join("sources");
+    let config = temp.path().join("symbolic.json");
+    let stale_src = source_root.join("removed.conf");
+    let stale_link = temp.path().join("links/removed.conf");
+    fs::create_dir_all(stale_link.parent().expect("stale link parent"))
+        .expect("create link parent");
+    fs::create_dir_all(&source_root).expect("create source root");
+    unix_fs::symlink(&stale_src, &stale_link).expect("create stale symlink");
+    write_config(&config, &[(&stale_link, &stale_src)]);
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "sync",
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+            "--source",
+            source_root.to_str().expect("utf-8 source path"),
+        ])
+        .write_stdin("n\n")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Source")
+                .and(predicate::str::contains("Delete"))
+                .and(predicate::str::contains(
+                    "Sync complete: stale=1, removed=1, deleted=0, kept=1",
+                )),
+        );
+
+    assert_no_entry(&config, &stale_link);
+    assert_symlink_points_to(&stale_link, &stale_src);
+}
+
+#[test]
 fn sync_delete_links_without_yes_fails_instead_of_ignoring_confirmation() {
     let temp = TempDir::new().expect("create temporary directory");
     let source_root = temp.path().join("sources");
@@ -493,6 +589,38 @@ fn sync_delete_links_without_yes_fails_instead_of_ignoring_confirmation() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("--delete-links").and(predicate::str::contains("--yes")));
+
+    assert_has_entry(&config, &stale_link, &stale_src);
+    assert_symlink_points_to(&stale_link, &stale_src);
+}
+
+#[test]
+fn sync_keep_links_without_yes_fails_instead_of_ignoring_confirmation() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let source_root = temp.path().join("sources");
+    let config = temp.path().join("symbolic.json");
+    let stale_src = source_root.join("removed.conf");
+    let stale_link = temp.path().join("links/removed.conf");
+    fs::create_dir_all(stale_link.parent().expect("stale link parent"))
+        .expect("create link parent");
+    fs::create_dir_all(&source_root).expect("create source root");
+    unix_fs::symlink(&stale_src, &stale_link).expect("create stale symlink");
+    write_config(&config, &[(&stale_link, &stale_src)]);
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "sync",
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+            "--source",
+            source_root.to_str().expect("utf-8 source path"),
+            "--keep-links",
+        ])
+        .write_stdin("y\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--keep-links").and(predicate::str::contains("--yes")));
 
     assert_has_entry(&config, &stale_link, &stale_src);
     assert_symlink_points_to(&stale_link, &stale_src);

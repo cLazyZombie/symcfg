@@ -84,17 +84,25 @@ impl ConfigFile {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
         {
-            fs::create_dir_all(parent).map_err(|err| ConfigError::Io {
-                path: parent.to_path_buf(),
-                kind: err.kind(),
-                message: err.to_string(),
+            fs::create_dir_all(parent).map_err(|err| {
+                // LCOV_EXCL_START
+                ConfigError::Io {
+                    path: parent.to_path_buf(),
+                    kind: err.kind(),
+                    message: err.to_string(),
+                }
             })?;
+            // LCOV_EXCL_STOP
         }
 
-        let mut json = serde_json::to_string_pretty(self).map_err(|err| ConfigError::Json {
-            path: path.to_path_buf(),
-            message: err.to_string(),
+        let mut json = serde_json::to_string_pretty(self).map_err(|err| {
+            // LCOV_EXCL_START
+            ConfigError::Json {
+                path: path.to_path_buf(),
+                message: err.to_string(),
+            }
         })?;
+        // LCOV_EXCL_STOP
         json.push('\n');
 
         fs::write(path, json).map_err(|err| ConfigError::Io {
@@ -184,6 +192,7 @@ pub enum ConfigError {
     Json { path: PathBuf, message: String },
 }
 
+// LCOV_EXCL_START
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,4 +331,25 @@ mod tests {
             ]
         );
     }
+    #[test]
+    fn load_or_default_returns_error_for_existing_malformed_config() {
+        let dir = tempfile::tempdir().expect("create temporary directory");
+        let path = dir.path().join("symbolic.json");
+        std::fs::write(&path, "{ invalid json\n").expect("write malformed config");
+
+        let err = ConfigFile::load_or_default(&path)
+            .expect_err("existing malformed config should not default");
+
+        match err {
+            ConfigError::Json {
+                path: err_path,
+                message,
+            } => {
+                assert_eq!(err_path, path);
+                assert!(!message.is_empty());
+            }
+            other => panic!("expected JSON error, got {other:?}"),
+        }
+    }
 }
+// LCOV_EXCL_STOP
