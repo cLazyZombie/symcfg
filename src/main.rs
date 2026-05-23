@@ -2,12 +2,19 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use anstream::println;
+use anstyle::{AnsiColor, Style};
 use clap::{ArgAction, Parser, Subcommand};
 use symcfg::DEFAULT_CONFIG_FILENAME;
-use symcfg::apply::{self, ApplyDecision, ApplyOptions, ApplyPrompter};
+use symcfg::apply::{
+    self, ApplyDecision, ApplyItemStatus, ApplyOptions, ApplyPrompter, ApplySkipReason,
+};
 use symcfg::config::LinkEntry;
 use symcfg::link::{self, LinkOptions, ParentDecision, ParentPrompter};
+use symcfg::list::LinkStatus;
+use symcfg::search::SearchItem;
 use symcfg::sync::{self, AutoDeletePolicy, SyncDeleteDecision, SyncOptions, SyncPrompter};
+use symcfg::sync::{SyncItemStatus, SyncReport};
 
 #[derive(Debug, Parser)]
 #[command(name = "symcfg")]
@@ -163,8 +170,32 @@ fn run(cli: Cli) -> Result<(), String> {
             let report =
                 symcfg::search::search_and_update_config(&source_root, &link_roots, &output)
                     .map_err(|err| err.to_string())?;
+            for item in &report.items {
+                match item {
+                    SearchItem::Added { link, src } => {
+                        println!("{} {} -> {}", added(), link.display(), src.display());
+                    }
+                    SearchItem::Duplicate { link, src } => {
+                        println!("{} {} -> {}", duplicate(), link.display(), src.display());
+                    }
+                    SearchItem::Conflict {
+                        link,
+                        existing_src,
+                        new_src,
+                    } => {
+                        println!(
+                            "{} {} existing={} new={}",
+                            conflict(),
+                            link.display(),
+                            existing_src.display(),
+                            new_src.display()
+                        );
+                    }
+                }
+            }
             println!(
-                "Search complete: matched={}, added={}, duplicate={}, conflict={}",
+                "{} matched={}, added={}, duplicate={}, conflict={}",
+                summary("Search complete"),
                 report.matched,
                 report.added,
                 report.duplicates,
@@ -187,9 +218,34 @@ fn run(cli: Cli) -> Result<(), String> {
                 },
             )
             .map_err(|err| err.to_string())?;
+            if report.created_parent
+                && let Some(parent) = link.parent()
+            {
+                println!("{} {}", created_parent(), parent.display());
+            }
+            if report.created_link {
+                println!("{} {} -> {}", created(), link.display(), src.display());
+            } else {
+                println!(
+                    "{} {} -> {}",
+                    skipped("already-linked"),
+                    link.display(),
+                    src.display()
+                );
+            }
+            if report.registered {
+                println!("{} {} -> {}", registered(), link.display(), src.display());
+            }
+            if report.duplicate {
+                println!("{} {} -> {}", duplicate(), link.display(), src.display());
+            }
             println!(
-                "Link complete: created={}, parent_created={}, registered={}, duplicate={}",
-                report.created_link, report.created_parent, report.registered, report.duplicate
+                "{} created={}, parent_created={}, registered={}, duplicate={}",
+                summary("Link complete"),
+                report.created_link,
+                report.created_parent,
+                report.registered,
+                report.duplicate
             );
         }
         Command::Apply { config, yes } => {
@@ -201,8 +257,37 @@ fn run(cli: Cli) -> Result<(), String> {
                 },
             )
             .map_err(|err| err.to_string())?;
+            for item in &report.items {
+                match item.status {
+                    ApplyItemStatus::Created => {
+                        println!(
+                            "{} {} -> {}",
+                            created(),
+                            item.link.display(),
+                            item.src.display()
+                        );
+                    }
+                    ApplyItemStatus::Skipped(reason) => {
+                        println!(
+                            "{} {} -> {}",
+                            skipped(apply_skip_reason(reason)),
+                            item.link.display(),
+                            item.src.display()
+                        );
+                    }
+                    ApplyItemStatus::Conflict => {
+                        println!(
+                            "{} {} -> {}",
+                            conflict(),
+                            item.link.display(),
+                            item.src.display()
+                        );
+                    }
+                }
+            }
             println!(
-                "Apply complete: created={}, skipped={}, conflict={}",
+                "{} created={}, skipped={}, conflict={}",
+                summary("Apply complete"),
                 report.created,
                 report.skipped,
                 report.conflicts.len()
@@ -212,8 +297,8 @@ fn run(cli: Cli) -> Result<(), String> {
             let items = symcfg::list::list_config(&config).map_err(|err| err.to_string())?;
             for item in items {
                 println!(
-                    "{}\t{}\t{}",
-                    item.status.as_str(),
+                    "{} {} -> {}",
+                    list_status(item.status),
                     item.link.display(),
                     item.src.display()
                 );
@@ -258,18 +343,102 @@ fn run(cli: Cli) -> Result<(), String> {
                 },
             )
             .map_err(|err| err.to_string())?;
+            print_sync_items(&report);
             println!(
-                "Sync complete: stale={}, removed={}, deleted={}, kept={}",
-                report.stale, report.removed_entries, report.deleted_links, report.kept_links
+                "{} stale={}, removed={}, deleted={}, kept={}",
+                summary("Sync complete"),
+                report.stale,
+                report.removed_entries,
+                report.deleted_links,
+                report.kept_links
             );
         }
         Command::Validate { config } => {
             apply::validate_config_file(&config).map_err(|err| format!("invalid config: {err}"))?;
-            println!("Config is valid");
+            println!("{} {}", valid(), config.display());
         }
     }
 
     Ok(())
+}
+
+fn style(color: AnsiColor) -> Style {
+    color.on_default().bold()
+}
+
+fn label(text: &str, style: Style) -> String {
+    format!("{style}{text:<18}{style:#}")
+}
+
+fn summary(text: &str) -> String {
+    label(text, style(AnsiColor::BrightCyan))
+}
+
+fn added() -> String {
+    label("added", style(AnsiColor::Green))
+}
+
+fn registered() -> String {
+    label("registered", style(AnsiColor::Green))
+}
+
+fn created() -> String {
+    label("created", style(AnsiColor::Green))
+}
+
+fn created_parent() -> String {
+    label("created-parent", style(AnsiColor::Green))
+}
+
+fn duplicate() -> String {
+    label("duplicate", style(AnsiColor::Yellow))
+}
+
+fn skipped(reason: &str) -> String {
+    label(&format!("skipped:{reason}"), style(AnsiColor::Yellow))
+}
+
+fn conflict() -> String {
+    label("conflict", style(AnsiColor::Red))
+}
+
+fn valid() -> String {
+    label("valid", style(AnsiColor::Green))
+}
+
+fn apply_skip_reason(reason: ApplySkipReason) -> &'static str {
+    match reason {
+        ApplySkipReason::AlreadyLinked => "already-linked",
+        ApplySkipReason::MissingParent => "missing-parent",
+        ApplySkipReason::Declined => "declined",
+    }
+}
+
+fn list_status(status: LinkStatus) -> String {
+    match status {
+        LinkStatus::Linked => label("linked", style(AnsiColor::Green)),
+        LinkStatus::Missing => label("missing", style(AnsiColor::Yellow)),
+        LinkStatus::Conflict => conflict(),
+    }
+}
+
+fn sync_status(status: SyncItemStatus) -> String {
+    match status {
+        SyncItemStatus::DeletedLink => label("deleted", style(AnsiColor::Green)),
+        SyncItemStatus::KeptLink => label("kept", style(AnsiColor::Yellow)),
+        SyncItemStatus::MissingLink => label("missing-link", style(AnsiColor::Yellow)),
+    }
+}
+
+fn print_sync_items(report: &SyncReport) {
+    for item in &report.items {
+        println!(
+            "{} {} -> {}",
+            sync_status(item.status),
+            item.link.display(),
+            item.src.display()
+        );
+    }
 }
 
 fn prompt_yes_no(message: &str) -> io::Result<bool> {

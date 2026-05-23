@@ -36,6 +36,8 @@ symcfg search ~/.config
 symcfg apply --yes
 ```
 
+명령 결과는 상태 라벨이 색으로 구분되며, 항목별 결과를 출력한 뒤 마지막에 요약을 출력합니다.
+
 ## 설치
 
 Unix 계열 시스템에서 동작합니다.
@@ -53,6 +55,7 @@ symcfg search <link-root>... [--source <source-root>] [-o symbolic.json]
 ```
 
 `link-root` 아래에서 `source-root` 아래 원본을 가리키는 심볼릭 링크를 찾아 설정 파일에 추가합니다. `--source` 기본값은 `.`입니다.
+각 항목은 `added`, `duplicate`, `conflict` 중 하나로 표시됩니다.
 
 ```sh
 symcfg link <src> <link> [-c symbolic.json] [-y]
@@ -70,7 +73,13 @@ symcfg apply [-c symbolic.json] [-y]
 symcfg list [-c symbolic.json]
 ```
 
-설정 항목을 `status<TAB>link<TAB>src` 형식으로 한 줄에 하나씩 출력합니다. 상태는 `linked`, `missing`, `conflict` 중 하나입니다.
+설정 항목을 한 줄에 하나씩 출력합니다. 상태는 `linked`, `missing`, `conflict` 중 하나입니다.
+
+```text
+linked             ~/.config/nvim/init.lua -> nvim/init.lua
+missing            ~/.config/git/config -> git/config
+conflict           ~/.zshrc -> zsh/zshrc
+```
 
 ```sh
 symcfg sync [source-root] [-c symbolic.json] [-y] [--delete-links|--keep-links]

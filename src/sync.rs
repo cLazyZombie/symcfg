@@ -33,12 +33,27 @@ pub struct SyncOptions<P> {
     pub prompter: P,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncReport {
     pub stale: usize,
     pub removed_entries: usize,
     pub deleted_links: usize,
     pub kept_links: usize,
+    pub items: Vec<SyncItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncItem {
+    pub status: SyncItemStatus,
+    pub link: PathBuf,
+    pub src: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncItemStatus {
+    DeletedLink,
+    KeptLink,
+    MissingLink,
 }
 
 pub fn sync_config<P: SyncPrompter>(
@@ -72,6 +87,7 @@ pub fn sync_config<P: SyncPrompter>(
         removed_entries: stale_entries.len(),
         deleted_links: 0,
         kept_links: 0,
+        items: Vec::new(),
     };
 
     for entry in &stale_entries {
@@ -79,12 +95,43 @@ pub fn sync_config<P: SyncPrompter>(
             SyncDeleteDecision::KeepLink => {
                 if link_path_exists(&entry.link)? {
                     report.kept_links += 1;
+                    report.items.push(SyncItem {
+                        status: SyncItemStatus::KeptLink,
+                        link: entry.link.clone(),
+                        src: entry.src.clone(),
+                    });
+                } else {
+                    report.items.push(SyncItem {
+                        status: SyncItemStatus::MissingLink,
+                        link: entry.link.clone(),
+                        src: entry.src.clone(),
+                    });
                 }
             }
             SyncDeleteDecision::DeleteLink => match delete_matching_symlink(entry)? {
-                LinkDeleteStatus::Deleted => report.deleted_links += 1,
-                LinkDeleteStatus::Kept => report.kept_links += 1,
-                LinkDeleteStatus::Missing => {} // LCOV_EXCL_LINE
+                LinkDeleteStatus::Deleted => {
+                    report.deleted_links += 1;
+                    report.items.push(SyncItem {
+                        status: SyncItemStatus::DeletedLink,
+                        link: entry.link.clone(),
+                        src: entry.src.clone(),
+                    });
+                }
+                LinkDeleteStatus::Kept => {
+                    report.kept_links += 1;
+                    report.items.push(SyncItem {
+                        status: SyncItemStatus::KeptLink,
+                        link: entry.link.clone(),
+                        src: entry.src.clone(),
+                    });
+                }
+                LinkDeleteStatus::Missing => {
+                    report.items.push(SyncItem {
+                        status: SyncItemStatus::MissingLink,
+                        link: entry.link.clone(),
+                        src: entry.src.clone(),
+                    });
+                }
             },
         }
     }
@@ -94,6 +141,7 @@ pub fn sync_config<P: SyncPrompter>(
 
     Ok(report)
 }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LinkDeleteStatus {
     Deleted,
@@ -281,6 +329,19 @@ mod tests {
         assert_eq!(target.as_path(), src);
     }
 
+    fn assert_report_counts(
+        report: &SyncReport,
+        stale: usize,
+        removed_entries: usize,
+        deleted_links: usize,
+        kept_links: usize,
+    ) {
+        assert_eq!(report.stale, stale);
+        assert_eq!(report.removed_entries, removed_entries);
+        assert_eq!(report.deleted_links, deleted_links);
+        assert_eq!(report.kept_links, kept_links);
+    }
+
     #[test]
     fn source_under_source_root_that_exists_remains_in_config() {
         let dir = tempfile::tempdir().expect("create temporary directory");
@@ -303,15 +364,7 @@ mod tests {
         )
         .expect("sync config");
 
-        assert_eq!(
-            report,
-            SyncReport {
-                stale: 0,
-                removed_entries: 0,
-                deleted_links: 0,
-                kept_links: 0,
-            }
-        );
+        assert_report_counts(&report, 0, 0, 0, 0);
         assert_eq!(read_links(&config_path), vec![original]);
     }
 
@@ -335,15 +388,7 @@ mod tests {
         )
         .expect("sync config");
 
-        assert_eq!(
-            report,
-            SyncReport {
-                stale: 1,
-                removed_entries: 1,
-                deleted_links: 0,
-                kept_links: 0,
-            }
-        );
+        assert_report_counts(&report, 1, 1, 0, 0);
         assert!(read_links(&config_path).is_empty());
     }
     #[test]
@@ -369,15 +414,7 @@ mod tests {
         )
         .expect("sync config");
 
-        assert_eq!(
-            report,
-            SyncReport {
-                stale: 1,
-                removed_entries: 1,
-                deleted_links: 0,
-                kept_links: 0,
-            }
-        );
+        assert_report_counts(&report, 1, 1, 0, 0);
         assert!(read_links(&config_path).is_empty());
     }
 
@@ -402,15 +439,7 @@ mod tests {
         )
         .expect("sync config");
 
-        assert_eq!(
-            report,
-            SyncReport {
-                stale: 0,
-                removed_entries: 0,
-                deleted_links: 0,
-                kept_links: 0,
-            }
-        );
+        assert_report_counts(&report, 0, 0, 0, 0);
         assert_eq!(read_links(&config_path), vec![original]);
     }
 
@@ -438,15 +467,7 @@ mod tests {
         )
         .expect("sync config");
 
-        assert_eq!(
-            report,
-            SyncReport {
-                stale: 1,
-                removed_entries: 1,
-                deleted_links: 0,
-                kept_links: 1,
-            }
-        );
+        assert_report_counts(&report, 1, 1, 0, 1);
         assert!(read_links(&config_path).is_empty());
         assert_symlink_points_to(&link, &stale_src);
         assert_eq!(prompter.calls(), vec![stale_entry]);
@@ -474,15 +495,7 @@ mod tests {
         )
         .expect("sync config");
 
-        assert_eq!(
-            report,
-            SyncReport {
-                stale: 1,
-                removed_entries: 1,
-                deleted_links: 0,
-                kept_links: 1,
-            }
-        );
+        assert_report_counts(&report, 1, 1, 0, 1);
         assert!(read_links(&config_path).is_empty());
         assert_symlink_points_to(&link, &stale_src);
     }
@@ -509,15 +522,7 @@ mod tests {
         )
         .expect("sync config");
 
-        assert_eq!(
-            report,
-            SyncReport {
-                stale: 1,
-                removed_entries: 1,
-                deleted_links: 1,
-                kept_links: 0,
-            }
-        );
+        assert_report_counts(&report, 1, 1, 1, 0);
         assert!(read_links(&config_path).is_empty());
         assert!(!link.exists());
         assert!(fs::symlink_metadata(&link).is_err());
@@ -542,15 +547,7 @@ mod tests {
         )
         .expect("sync config");
 
-        assert_eq!(
-            report,
-            SyncReport {
-                stale: 1,
-                removed_entries: 1,
-                deleted_links: 0,
-                kept_links: 0,
-            }
-        );
+        assert_report_counts(&report, 1, 1, 0, 0);
         assert!(read_links(&config_path).is_empty());
         assert!(!link.exists());
         assert!(fs::symlink_metadata(&link).is_err());
@@ -578,15 +575,7 @@ mod tests {
         )
         .expect("sync config");
 
-        assert_eq!(
-            report,
-            SyncReport {
-                stale: 1,
-                removed_entries: 1,
-                deleted_links: 1,
-                kept_links: 0,
-            }
-        );
+        assert_report_counts(&report, 1, 1, 1, 0);
         assert!(read_links(&config_path).is_empty());
         assert!(fs::symlink_metadata(&link).is_err());
     }
@@ -647,15 +636,7 @@ mod tests {
         )
         .expect("sync config");
 
-        assert_eq!(
-            report,
-            SyncReport {
-                stale: 2,
-                removed_entries: 2,
-                deleted_links: 0,
-                kept_links: 2,
-            }
-        );
+        assert_report_counts(&report, 2, 2, 0, 2);
         assert!(read_links(&config_path).is_empty());
         assert_eq!(
             fs::read_to_string(&regular_link).expect("read regular file"),

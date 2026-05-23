@@ -97,6 +97,27 @@ fn assert_symlink_exists(path: &Path) {
     );
 }
 
+fn label(text: &str) -> String {
+    format!("{text:<18}")
+}
+
+fn item_line(status: &str, link: &Path, src: &Path) -> String {
+    format!(
+        "{} {} -> {}\n",
+        label(status),
+        link.display(),
+        src.display()
+    )
+}
+
+fn path_line(status: &str, path: &Path) -> String {
+    format!("{} {}\n", label(status), path.display())
+}
+
+fn summary_line(status: &str, counts: &str) -> String {
+    format!("{} {counts}\n", label(status))
+}
+
 #[test]
 fn search_writes_default_symbolic_json_with_link_and_src_entries() {
     let temp = TempDir::new().expect("create temporary directory");
@@ -118,7 +139,14 @@ fn search_writes_default_symbolic_json_with_link_and_src_entries() {
         ])
         .assert()
         .success()
-        .stdout("Search complete: matched=1, added=1, duplicate=0, conflict=0\n");
+        .stdout(format!(
+            "{}{}",
+            item_line("added", &link, &src),
+            summary_line(
+                "Search complete",
+                "matched=1, added=1, duplicate=0, conflict=0"
+            )
+        ));
 
     let config = temp.path().join(DEFAULT_CONFIG);
     assert!(config.exists(), "search should create symbolic.json in cwd");
@@ -162,6 +190,54 @@ fn search_writes_custom_output_path() {
 }
 
 #[test]
+fn search_prints_duplicate_and_conflict_items() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let source_root = temp.path().join("sources");
+    let link_root = temp.path().join("links");
+    let config = temp.path().join("symbolic.json");
+    let duplicate_src = source_root.join("duplicate");
+    let conflict_src = source_root.join("conflict");
+    let previous_src = source_root.join("previous");
+    let duplicate_link = link_root.join("duplicate");
+    let conflict_link = link_root.join("conflict");
+    write_file(&duplicate_src, "duplicate\n");
+    write_file(&conflict_src, "conflict\n");
+    write_file(&previous_src, "previous\n");
+    fs::create_dir_all(&link_root).expect("create link root");
+    unix_fs::symlink(&duplicate_src, &duplicate_link).expect("create duplicate symlink");
+    unix_fs::symlink(&conflict_src, &conflict_link).expect("create conflict symlink");
+    write_config(
+        &config,
+        &[
+            (&duplicate_link, &duplicate_src),
+            (&conflict_link, &previous_src),
+        ],
+    );
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "search",
+            "--source",
+            source_root.to_str().expect("utf-8 source path"),
+            link_root.to_str().expect("utf-8 link path"),
+            "--output",
+            config.to_str().expect("utf-8 config path"),
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("duplicate")
+                .and(predicate::str::contains("conflict"))
+                .and(predicate::str::contains("existing="))
+                .and(predicate::str::contains("new="))
+                .and(predicate::str::contains(
+                    "Search complete    matched=2, added=0, duplicate=1, conflict=1",
+                )),
+        );
+}
+
+#[test]
 fn link_yes_creates_missing_parent_symlink_and_registers_entry() {
     let temp = TempDir::new().expect("create temporary directory");
     let config = temp.path().join("symbolic.json");
@@ -181,9 +257,16 @@ fn link_yes_creates_missing_parent_symlink_and_registers_entry() {
         ])
         .assert()
         .success()
-        .stdout(
-            "Link complete: created=true, parent_created=true, registered=true, duplicate=false\n",
-        );
+        .stdout(format!(
+            "{}{}{}{}",
+            path_line("created-parent", link.parent().expect("link parent")),
+            item_line("created", &link, &src),
+            item_line("registered", &link, &src),
+            summary_line(
+                "Link complete",
+                "created=true, parent_created=true, registered=true, duplicate=false"
+            )
+        ));
 
     assert_symlink_points_to(&link, &src);
     assert_has_entry_src(&config, &link, "sources/editor.toml");
@@ -211,9 +294,16 @@ fn link_yes_writes_home_relative_link_and_current_dir_relative_src() {
         .env("HOME", &fake_home)
         .assert()
         .success()
-        .stdout(
-            "Link complete: created=true, parent_created=true, registered=true, duplicate=false\n",
-        );
+        .stdout(format!(
+            "{}{}{}{}",
+            path_line("created-parent", link.parent().expect("link parent")),
+            item_line("created", &link, &src),
+            item_line("registered", &link, &src),
+            summary_line(
+                "Link complete",
+                "created=true, parent_created=true, registered=true, duplicate=false"
+            )
+        ));
 
     assert_symlink_points_to(&link, &src);
 
@@ -248,14 +338,55 @@ fn link_yes_writes_dot_when_src_is_current_directory() {
         ])
         .assert()
         .success()
-        .stdout(
-            "Link complete: created=true, parent_created=true, registered=true, duplicate=false\n",
-        );
+        .stdout(format!(
+            "{}{}{}{}",
+            path_line("created-parent", link.parent().expect("link parent")),
+            item_line("created", &link, temp.path()),
+            item_line("registered", &link, temp.path()),
+            summary_line(
+                "Link complete",
+                "created=true, parent_created=true, registered=true, duplicate=false"
+            )
+        ));
 
     assert_symlink_points_to(&link, temp.path());
 
     let raw = fs::read_to_string(&config).expect("read config");
     assert!(raw.contains("\"src\": \".\""));
+}
+
+#[test]
+fn link_yes_prints_already_linked_and_duplicate_when_entry_exists() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let config = temp.path().join("symbolic.json");
+    let src = temp.path().join("sources/editor.toml");
+    let link = temp.path().join("links/editor.toml");
+    write_file(&src, "tab_width = 4\n");
+    fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
+    unix_fs::symlink(&src, &link).expect("create existing symlink");
+    write_config(&config, &[(&link, &src)]);
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "link",
+            src.to_str().expect("utf-8 source path"),
+            link.to_str().expect("utf-8 link path"),
+            "--yes",
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+        ])
+        .assert()
+        .success()
+        .stdout(format!(
+            "{}{}{}",
+            item_line("skipped:already-linked", &link, &src),
+            item_line("duplicate", &link, &src),
+            summary_line(
+                "Link complete",
+                "created=false, parent_created=false, registered=false, duplicate=true"
+            )
+        ));
 }
 
 #[test]
@@ -334,7 +465,11 @@ fn apply_yes_creates_missing_symlinks_and_prints_english_summary_counts() {
         ])
         .assert()
         .success()
-        .stdout("Apply complete: created=1, skipped=0, conflict=0\n");
+        .stdout(format!(
+            "{}{}",
+            item_line("created", &link, &src),
+            summary_line("Apply complete", "created=1, skipped=0, conflict=0")
+        ));
 
     assert_symlink_points_to(&link, &src);
 }
@@ -359,7 +494,15 @@ fn apply_yes_resolves_relative_src_from_current_directory() {
         ])
         .assert()
         .success()
-        .stdout("Apply complete: created=1, skipped=0, conflict=0\n");
+        .stdout(
+            predicate::str::contains("created")
+                .and(predicate::str::contains(
+                    link.to_str().expect("utf-8 link path"),
+                ))
+                .and(predicate::str::contains(
+                    "Apply complete     created=1, skipped=0, conflict=0",
+                )),
+        );
 
     assert_symlink_points_to(&link, &src);
 }
@@ -383,10 +526,50 @@ fn apply_yes_skips_link_when_parent_directory_is_missing() {
         ])
         .assert()
         .success()
-        .stdout("Apply complete: created=0, skipped=1, conflict=0\n");
+        .stdout(format!(
+            "{}{}",
+            item_line("skipped:missing-parent", &link, &src),
+            summary_line("Apply complete", "created=0, skipped=1, conflict=0")
+        ));
 
     assert!(!link.parent().expect("link parent").exists());
     assert!(!link.exists());
+}
+
+#[test]
+fn apply_yes_prints_already_linked_and_conflict_items() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let config = temp.path().join("symbolic.json");
+    let linked_src = temp.path().join("sources/linked");
+    let conflict_src = temp.path().join("sources/conflict");
+    let linked_link = temp.path().join("links/linked");
+    let conflict_link = temp.path().join("links/conflict");
+    write_file(&linked_src, "linked\n");
+    write_file(&conflict_src, "conflict\n");
+    fs::create_dir_all(linked_link.parent().expect("link parent")).expect("create link parent");
+    unix_fs::symlink(&linked_src, &linked_link).expect("create linked symlink");
+    fs::write(&conflict_link, "not a symlink\n").expect("write regular conflict path");
+    write_config(
+        &config,
+        &[(&linked_link, &linked_src), (&conflict_link, &conflict_src)],
+    );
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "apply",
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+            "--yes",
+        ])
+        .assert()
+        .success()
+        .stdout(format!(
+            "{}{}{}",
+            item_line("conflict", &conflict_link, &conflict_src),
+            item_line("skipped:already-linked", &linked_link, &linked_src),
+            summary_line("Apply complete", "created=0, skipped=1, conflict=1")
+        ));
 }
 
 #[test]
@@ -436,7 +619,7 @@ fn apply_prompts_for_missing_link_and_declines_no_on_stdin() {
         .success()
         .stdout(
             predicate::str::contains("Create link").and(predicate::str::contains(
-                "Apply complete: created=0, skipped=1, conflict=0",
+                "Apply complete     created=0, skipped=1, conflict=0",
             )),
         );
 
@@ -492,7 +675,11 @@ fn sync_keep_links_removes_stale_entries_keeps_link_and_prints_summary() {
         ])
         .assert()
         .success()
-        .stdout("Sync complete: stale=1, removed=1, deleted=0, kept=1\n");
+        .stdout(format!(
+            "{}{}",
+            item_line("kept", &stale_link, &stale_src),
+            summary_line("Sync complete", "stale=1, removed=1, deleted=0, kept=1")
+        ));
 
     assert_no_entry(&config, &stale_link);
     assert_symlink_exists(&stale_link);
@@ -533,7 +720,12 @@ fn sync_delete_links_removes_stale_entries_and_deletes_only_matching_symlink() {
         ])
         .assert()
         .success()
-        .stdout("Sync complete: stale=2, removed=2, deleted=1, kept=1\n");
+        .stdout(format!(
+            "{}{}{}",
+            item_line("kept", &nonmatching_link, &stale_src),
+            item_line("deleted", &matching_link, &stale_src),
+            summary_line("Sync complete", "stale=2, removed=2, deleted=1, kept=1")
+        ));
 
     assert_no_entry(&config, &matching_link);
     assert_no_entry(&config, &nonmatching_link);
@@ -542,6 +734,38 @@ fn sync_delete_links_removes_stale_entries_and_deletes_only_matching_symlink() {
         "matching stale symlink should be deleted"
     );
     assert_symlink_points_to(&nonmatching_link, &unrelated_target);
+}
+
+#[test]
+fn sync_delete_links_prints_missing_link_item() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let source_root = temp.path().join("sources");
+    let config = temp.path().join("symbolic.json");
+    let stale_src = source_root.join("removed.conf");
+    let stale_link = temp.path().join("links/removed.conf");
+    fs::create_dir_all(&source_root).expect("create source root");
+    write_config(&config, &[(&stale_link, &stale_src)]);
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "sync",
+            source_root.to_str().expect("utf-8 source path"),
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+            "--yes",
+            "--delete-links",
+        ])
+        .assert()
+        .success()
+        .stdout(format!(
+            "{}{}",
+            item_line("missing-link", &stale_link, &stale_src),
+            summary_line("Sync complete", "stale=1, removed=1, deleted=0, kept=0")
+        ));
+
+    assert_no_entry(&config, &stale_link);
+    assert!(!stale_link.exists());
 }
 
 #[test]
@@ -619,10 +843,14 @@ fn list_prints_one_line_per_config_entry_with_link_status() {
     );
 
     let expected = format!(
-        "conflict\t{}\tsources/conflict\nlinked\t{}\tsources/linked\nmissing\t{}\tsources/missing\nconflict\t{}\tsources/regular\n",
+        "{} {} -> sources/conflict\n{} {} -> sources/linked\n{} {} -> sources/missing\n{} {} -> sources/regular\n",
+        label("conflict"),
         conflict_link.display(),
+        label("linked"),
         linked_link.display(),
+        label("missing"),
         missing_link.display(),
+        label("conflict"),
         regular_link.display()
     );
 
@@ -703,7 +931,7 @@ fn sync_prompts_for_stale_link_and_declines_no_on_stdin() {
             predicate::str::contains("Source")
                 .and(predicate::str::contains("Delete"))
                 .and(predicate::str::contains(
-                    "Sync complete: stale=1, removed=1, deleted=0, kept=1",
+                    "Sync complete      stale=1, removed=1, deleted=0, kept=1",
                 )),
         );
 

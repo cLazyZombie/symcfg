@@ -33,12 +33,34 @@ pub struct ApplyReport {
     pub created: usize,
     pub skipped: usize,
     pub conflicts: Vec<ApplyConflict>,
+    pub items: Vec<ApplyItem>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ApplyConflict {
     pub link: PathBuf,
     pub src: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplyItem {
+    pub status: ApplyItemStatus,
+    pub link: PathBuf,
+    pub src: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyItemStatus {
+    Created,
+    Skipped(ApplySkipReason),
+    Conflict,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplySkipReason {
+    AlreadyLinked,
+    MissingParent,
+    Declined,
 }
 
 #[derive(Debug, Error)]
@@ -67,6 +89,7 @@ pub fn apply_config<P: ApplyPrompter>(
         created: 0,
         skipped: 0,
         conflicts: Vec::new(),
+        items: Vec::new(),
     };
 
     for entry in &config.links {
@@ -109,8 +132,18 @@ pub fn apply_config<P: ApplyPrompter>(
 
                     if paths::paths_equivalent(&target, &src) {
                         report.skipped += 1;
+                        report.items.push(ApplyItem {
+                            status: ApplyItemStatus::Skipped(ApplySkipReason::AlreadyLinked),
+                            link: link.clone(),
+                            src: src.clone(),
+                        });
                     } else {
                         report.conflicts.push(ApplyConflict {
+                            link: link.clone(),
+                            src: src.clone(),
+                        });
+                        report.items.push(ApplyItem {
+                            status: ApplyItemStatus::Conflict,
                             link: link.clone(),
                             src: src.clone(),
                         });
@@ -120,11 +153,21 @@ pub fn apply_config<P: ApplyPrompter>(
                         link: link.clone(),
                         src: src.clone(),
                     });
+                    report.items.push(ApplyItem {
+                        status: ApplyItemStatus::Conflict,
+                        link: link.clone(),
+                        src: src.clone(),
+                    });
                 }
             }
             Err(err) if err.kind() == ErrorKind::NotFound => {
                 if !link_parent_exists(&link) {
                     report.skipped += 1;
+                    report.items.push(ApplyItem {
+                        status: ApplyItemStatus::Skipped(ApplySkipReason::MissingParent),
+                        link,
+                        src,
+                    });
                     continue;
                 }
 
@@ -145,9 +188,19 @@ pub fn apply_config<P: ApplyPrompter>(
                         )?;
                         // LCOV_EXCL_STOP
                         report.created += 1;
+                        report.items.push(ApplyItem {
+                            status: ApplyItemStatus::Created,
+                            link: link.clone(),
+                            src: src.clone(),
+                        });
                     }
                     ApplyDecision::Skip => {
                         report.skipped += 1;
+                        report.items.push(ApplyItem {
+                            status: ApplyItemStatus::Skipped(ApplySkipReason::Declined),
+                            link: link.clone(),
+                            src: src.clone(),
+                        });
                     }
                 }
             }

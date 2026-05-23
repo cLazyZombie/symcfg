@@ -18,6 +18,7 @@ pub struct SearchReport {
     pub added: usize,
     pub duplicates: usize,
     pub conflicts: Vec<SearchConflict>,
+    pub items: Vec<SearchItem>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +26,23 @@ pub struct SearchConflict {
     pub link: PathBuf,
     pub existing_src: PathBuf,
     pub new_src: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchItem {
+    Added {
+        link: PathBuf,
+        src: PathBuf,
+    },
+    Duplicate {
+        link: PathBuf,
+        src: PathBuf,
+    },
+    Conflict {
+        link: PathBuf,
+        existing_src: PathBuf,
+        new_src: PathBuf,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -75,6 +93,7 @@ pub fn search_and_update_config(
         added: 0,
         duplicates: 0,
         conflicts: Vec::new(),
+        items: Vec::new(),
     };
 
     for link_root in link_roots {
@@ -138,17 +157,30 @@ pub fn search_and_update_config(
 
             report.matched += 1;
             match config.merge_entry(LinkEntry::new(link.clone(), src.clone())) {
-                Ok(MergeStatus::Added) => report.added += 1,
-                Ok(MergeStatus::Duplicate) => report.duplicates += 1,
+                Ok(MergeStatus::Added) => {
+                    report.added += 1;
+                    report.items.push(SearchItem::Added { link, src });
+                }
+                Ok(MergeStatus::Duplicate) => {
+                    report.duplicates += 1;
+                    report.items.push(SearchItem::Duplicate { link, src });
+                }
                 Err(ConfigError::Conflict {
                     existing_src,
                     new_src,
                     ..
-                }) => report.conflicts.push(SearchConflict {
-                    link,
-                    existing_src,
-                    new_src,
-                }),
+                }) => {
+                    report.conflicts.push(SearchConflict {
+                        link: link.clone(),
+                        existing_src: existing_src.clone(),
+                        new_src: new_src.clone(),
+                    });
+                    report.items.push(SearchItem::Conflict {
+                        link,
+                        existing_src,
+                        new_src,
+                    });
+                }
                 Err(err) => return Err(SearchError::Config(err)), // LCOV_EXCL_LINE
             }
         }

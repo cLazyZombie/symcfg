@@ -18,16 +18,6 @@ pub enum LinkStatus {
     Conflict,
 }
 
-impl LinkStatus {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            LinkStatus::Linked => "linked",
-            LinkStatus::Missing => "missing",
-            LinkStatus::Conflict => "conflict",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListItem {
     pub status: LinkStatus,
