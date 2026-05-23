@@ -153,7 +153,7 @@ pub fn link_and_register<P: ParentPrompter>(
                     },
                 )?;
             // LCOV_EXCL_STOP
-            if existing_target != src {
+            if !paths::paths_equivalent(&existing_target, &src) {
                 return Err(LinkError::FilesystemConflict {
                     path: link.to_path_buf(),
                 });
@@ -249,7 +249,7 @@ fn remove_created_symlink(link: &Path, src: &Path) -> Result<(), LinkError> {
     )?;
     // LCOV_EXCL_STOP
 
-    if target == src {
+    if paths::paths_equivalent(&target, src) {
         fs::remove_file(link).map_err(
             // LCOV_EXCL_START
             |source| LinkError::Io {
@@ -456,7 +456,7 @@ mod tests {
         );
     }
     #[test]
-    fn creates_symlink_from_relative_paths_and_registers_normalized_absolute_paths() {
+    fn creates_symlink_from_relative_paths_and_registers_current_dir_relative_src() {
         let (_dir, root) = temp_root();
         let src = write_source(&root, "src/app.toml");
         let link = root.join("links/app.toml");
@@ -479,7 +479,7 @@ mod tests {
         assert_eq!(link.canonicalize().expect("resolve created symlink"), src);
         assert_eq!(
             load_config(&config_path).links,
-            vec![LinkEntry::new(link, src)]
+            vec![LinkEntry::new(link, PathBuf::from("src/app.toml"))]
         );
     }
 

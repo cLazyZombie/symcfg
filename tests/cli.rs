@@ -45,14 +45,18 @@ fn links(config: &Value) -> &[Value] {
 }
 
 fn assert_has_entry(config_path: &Path, link: &Path, src: &Path) {
+    let expected_src = src.to_string_lossy();
+    assert_has_entry_src(config_path, link, expected_src.as_ref());
+}
+
+fn assert_has_entry_src(config_path: &Path, link: &Path, src: &str) {
     let config = read_config(config_path);
     let expected_link = link.to_string_lossy();
-    let expected_src = src.to_string_lossy();
 
     assert!(
         links(&config).iter().any(|entry| {
             entry["link"].as_str() == Some(expected_link.as_ref())
-                && entry["src"].as_str() == Some(expected_src.as_ref())
+                && entry["src"].as_str() == Some(src)
                 && entry.get("target").is_none()
         }),
         "config {config_path:?} should contain link={link:?}, src={src:?}, and no target field; actual: {config}"
@@ -73,6 +77,15 @@ fn assert_no_entry(config_path: &Path, link: &Path) {
 
 fn assert_symlink_points_to(link: &Path, src: &Path) {
     let actual = fs::read_link(link).expect("read symlink target");
+    if actual == src {
+        return;
+    }
+
+    if let (Ok(actual), Ok(expected)) = (actual.canonicalize(), src.canonicalize()) {
+        assert_eq!(actual, expected);
+        return;
+    }
+
     assert_eq!(actual, src);
 }
 
@@ -110,7 +123,7 @@ fn search_writes_default_symbolic_json_with_link_and_src_entries() {
 
     let config = temp.path().join(DEFAULT_CONFIG);
     assert!(config.exists(), "search should create symbolic.json in cwd");
-    assert_has_entry(&config, &link, &src);
+    assert_has_entry_src(&config, &link, "sources/app/settings.toml");
 }
 
 #[test]
@@ -147,7 +160,7 @@ fn search_writes_custom_output_path() {
         !temp.path().join(DEFAULT_CONFIG).exists(),
         "custom output should not create default config"
     );
-    assert_has_entry(&custom_config, &link, &src);
+    assert_has_entry_src(&custom_config, &link, "sources/shell/profile");
 }
 
 #[test]
@@ -175,11 +188,11 @@ fn link_yes_creates_missing_parent_symlink_and_registers_entry() {
         );
 
     assert_symlink_points_to(&link, &src);
-    assert_has_entry(&config, &link, &src);
+    assert_has_entry_src(&config, &link, "sources/editor.toml");
 }
 
 #[test]
-fn link_yes_writes_home_relative_config_paths_for_home_tempdir() {
+fn link_yes_writes_home_relative_link_and_current_dir_relative_src() {
     let temp = TempDir::new().expect("create temporary directory");
     let fake_home = temp.path().join("home/user");
     let config = fake_home.join("config/symbolic.json");
@@ -188,7 +201,7 @@ fn link_yes_writes_home_relative_config_paths_for_home_tempdir() {
     write_file(&src, "tab_width = 4\n");
 
     symcfg()
-        .current_dir(temp.path())
+        .current_dir(&fake_home)
         .args([
             "link",
             src.to_str().expect("utf-8 source path"),
@@ -213,16 +226,38 @@ fn link_yes_writes_home_relative_config_paths_for_home_tempdir() {
             .expect("link should be under fake home")
             .to_string_lossy()
     );
-    let expected_src = format!(
-        "~/{}",
-        src.strip_prefix(&fake_home)
-            .expect("source should be under fake home")
-            .to_string_lossy()
-    );
 
     assert!(raw.contains(&format!("\"link\": \"{expected_link}\"")));
-    assert!(raw.contains(&format!("\"src\": \"{expected_src}\"")));
+    assert!(raw.contains("\"src\": \"sources/editor.toml\""));
     assert!(!raw.contains(fake_home.to_str().expect("utf-8 fake home path")));
+}
+
+#[test]
+fn link_yes_writes_dot_when_src_is_current_directory() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let config = temp.path().join("symbolic.json");
+    let link = temp.path().join("links/root");
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "link",
+            temp.path().to_str().expect("utf-8 source path"),
+            link.to_str().expect("utf-8 link path"),
+            "--yes",
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+        ])
+        .assert()
+        .success()
+        .stdout(
+            "Link complete: created=true, parent_created=true, registered=true, duplicate=false\n",
+        );
+
+    assert_symlink_points_to(&link, temp.path());
+
+    let raw = fs::read_to_string(&config).expect("read config");
+    assert!(raw.contains("\"src\": \".\""));
 }
 
 #[test]
@@ -248,7 +283,7 @@ fn link_prompts_in_english_for_missing_parent_and_accepts_yes_on_stdin() {
         .stdout(predicate::str::contains("Create").and(predicate::str::contains("parent")));
 
     assert_symlink_points_to(&link, &src);
-    assert_has_entry(&config, &link, &src);
+    assert_has_entry_src(&config, &link, "sources/gitconfig");
 }
 
 #[test]
@@ -289,6 +324,31 @@ fn apply_yes_creates_missing_symlinks_and_prints_english_summary_counts() {
     let link = temp.path().join("links/zshrc");
     write_file(&src, "setopt prompt_subst\n");
     write_config(&config, &[(&link, &src)]);
+    fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "apply",
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+            "--yes",
+        ])
+        .assert()
+        .success()
+        .stdout("Apply complete: created=1, skipped=0, conflict=0\n");
+
+    assert_symlink_points_to(&link, &src);
+}
+
+#[test]
+fn apply_yes_resolves_relative_src_from_current_directory() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let config = temp.path().join("symbolic.json");
+    let src = temp.path().join("sources/zshrc");
+    let link = temp.path().join("links/zshrc");
+    write_file(&src, "setopt prompt_subst\n");
+    write_config(&config, &[(&link, Path::new("sources/zshrc"))]);
     fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
 
     symcfg()
@@ -532,6 +592,55 @@ fn validate_prints_english_success_for_valid_config_and_failure_for_invalid_conf
             predicate::str::contains("invalid config")
                 .and(predicate::str::contains("missing field `src`")),
         );
+}
+
+#[test]
+fn list_prints_one_line_per_config_entry_with_link_status() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let config = temp.path().join("symbolic.json");
+    let linked_src = temp.path().join("sources/linked");
+    let missing_src = Path::new("sources/missing");
+    let conflict_src = temp.path().join("sources/conflict");
+    let linked_link = temp.path().join("links/linked");
+    let missing_link = temp.path().join("links/missing");
+    let conflict_link = temp.path().join("links/conflict");
+    let regular_link = temp.path().join("links/regular");
+    let wrong_src = temp.path().join("sources/wrong");
+    write_file(&linked_src, "linked\n");
+    write_file(&conflict_src, "conflict\n");
+    write_file(&wrong_src, "wrong\n");
+    fs::create_dir_all(linked_link.parent().expect("link parent")).expect("create link parent");
+    unix_fs::symlink(&linked_src, &linked_link).expect("create linked symlink");
+    unix_fs::symlink(&wrong_src, &conflict_link).expect("create conflicting symlink");
+    fs::write(&regular_link, "not a symlink\n").expect("write regular file at link path");
+    write_config(
+        &config,
+        &[
+            (&linked_link, Path::new("sources/linked")),
+            (&missing_link, missing_src),
+            (&conflict_link, Path::new("sources/conflict")),
+            (&regular_link, Path::new("sources/regular")),
+        ],
+    );
+
+    let expected = format!(
+        "conflict\t{}\tsources/conflict\nlinked\t{}\tsources/linked\nmissing\t{}\tsources/missing\nconflict\t{}\tsources/regular\n",
+        conflict_link.display(),
+        linked_link.display(),
+        missing_link.display(),
+        regular_link.display()
+    );
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "list",
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+        ])
+        .assert()
+        .success()
+        .stdout(expected);
 }
 
 #[test]

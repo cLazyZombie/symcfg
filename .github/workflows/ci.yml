@@ -1,0 +1,20 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install coverage tools
+        run: |
+          cargo install cargo-llvm-cov --locked
+          cargo install --git https://github.com/cLazyZombie/lcov_filter --locked
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Coverage
+        run: ./scripts/coverage_100.sh

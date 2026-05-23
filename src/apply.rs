@@ -107,7 +107,7 @@ pub fn apply_config<P: ApplyPrompter>(
                     )?;
                     // LCOV_EXCL_STOP
 
-                    if target == src {
+                    if paths::paths_equivalent(&target, &src) {
                         report.skipped += 1;
                     } else {
                         report.conflicts.push(ApplyConflict {

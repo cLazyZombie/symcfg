@@ -152,7 +152,7 @@ fn delete_matching_symlink(entry: &LinkEntry) -> Result<LinkDeleteStatus, SyncEr
         io_error(&entry.src, err)
     })?;
     // LCOV_EXCL_STOP
-    if target != src {
+    if !paths::paths_equivalent(&target, &src) {
         return Ok(LinkDeleteStatus::Kept);
     }
 

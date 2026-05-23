@@ -1,5 +1,6 @@
 use std::{
     ffi::OsStr,
+    fs,
     io::{self, ErrorKind},
     path::{Component, Path, PathBuf},
 };
@@ -120,10 +121,53 @@ pub(crate) fn expand_config_home_markers(config: &mut ConfigFile) -> io::Result<
 pub(crate) fn collapse_config_home_paths(config: &mut ConfigFile) -> io::Result<()> {
     for entry in &mut config.links {
         entry.link = collapse_home_path(&entry.link)?;
-        entry.src = collapse_home_path(&entry.src)?;
+        entry.src = collapse_src_path(&entry.src)?;
     }
 
     Ok(())
+}
+
+fn collapse_src_path(path: &Path) -> io::Result<PathBuf> {
+    if !path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+
+    let normalized = normalize_absolute_lexical(path);
+    let cwd = std::env::current_dir().map(|cwd| normalize_absolute_lexical(&cwd))?;
+
+    if let Some(relative) = strip_prefix_or_dot(&normalized, &cwd) {
+        return Ok(relative);
+    }
+
+    if let (Ok(canonical_path), Ok(canonical_cwd)) =
+        (fs::canonicalize(&normalized), fs::canonicalize(&cwd))
+        && let Some(relative) = strip_prefix_or_dot(&canonical_path, &canonical_cwd)
+    {
+        return Ok(relative);
+    }
+
+    collapse_home_path(&normalized)
+}
+
+fn strip_prefix_or_dot(path: &Path, base: &Path) -> Option<PathBuf> {
+    let relative = path.strip_prefix(base).ok()?;
+
+    if relative.as_os_str().is_empty() {
+        Some(PathBuf::from("."))
+    } else {
+        Some(relative.to_path_buf())
+    }
+}
+
+pub(crate) fn paths_equivalent(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+
+    matches!(
+        (fs::canonicalize(left), fs::canonicalize(right)),
+        (Ok(left), Ok(right)) if left == right
+    )
 }
 
 pub(crate) fn normalize_config_entries(config: &mut ConfigFile) -> io::Result<()> {

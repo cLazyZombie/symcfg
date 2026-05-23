@@ -45,6 +45,10 @@ enum Command {
         #[arg(short = 'y', long = "yes", action = ArgAction::SetTrue)]
         yes: bool,
     },
+    List {
+        #[arg(short = 'c', long = "config", default_value = DEFAULT_CONFIG_FILENAME)]
+        config: PathBuf,
+    },
     Sync {
         #[arg(long = "source", default_value = ".")]
         source_root: PathBuf,
@@ -204,6 +208,17 @@ fn run(cli: Cli) -> Result<(), String> {
                 report.conflicts.len()
             );
         } // LCOV_EXCL_LINE
+        Command::List { config } => {
+            let items = symcfg::list::list_config(&config).map_err(|err| err.to_string())?;
+            for item in items {
+                println!(
+                    "{}\t{}\t{}",
+                    item.status.as_str(),
+                    item.link.display(),
+                    item.src.display()
+                );
+            }
+        }
         Command::Sync {
             source_root,
             config,
