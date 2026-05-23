@@ -1,4 +1,8 @@
-use std::{fs, os::unix::fs as unix_fs, path::Path};
+use std::{
+    fs,
+    os::unix::fs as unix_fs,
+    path::{Path, PathBuf},
+};
 
 use assert_cmd::Command;
 use assert_fs::TempDir;
@@ -6,6 +10,18 @@ use predicates::prelude::*;
 use serde_json::{Value, json};
 
 const DEFAULT_CONFIG: &str = "symbolic.json";
+
+fn home_dir() -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").expect("HOME must be set for CLI tests"))
+}
+
+fn home_relative(path: &Path) -> String {
+    let home = home_dir();
+    let relative = path
+        .strip_prefix(&home)
+        .expect("test path should be under HOME");
+    format!("~/{}", relative.to_string_lossy())
+}
 
 fn symcfg() -> Command {
     Command::cargo_bin("symcfg").expect("symcfg binary is built for integration tests")
@@ -176,6 +192,39 @@ fn link_yes_creates_missing_parent_symlink_and_registers_entry() {
 
     assert_symlink_points_to(&link, &src);
     assert_has_entry(&config, &link, &src);
+}
+
+#[test]
+fn link_yes_writes_home_relative_config_paths_for_home_tempdir() {
+    let home = home_dir();
+    let temp = tempfile::tempdir_in(&home).expect("create temporary directory under home");
+    let config = temp.path().join("config/symbolic.json");
+    let src = temp.path().join("sources/editor.toml");
+    let link = temp.path().join("links/missing/editor.toml");
+    write_file(&src, "tab_width = 4\n");
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "link",
+            src.to_str().expect("utf-8 source path"),
+            link.to_str().expect("utf-8 link path"),
+            "--yes",
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+        ])
+        .assert()
+        .success()
+        .stdout(
+            "Link complete: created=true, parent_created=true, registered=true, duplicate=false\n",
+        );
+
+    assert_symlink_points_to(&link, &src);
+
+    let raw = fs::read_to_string(&config).expect("read config");
+    assert!(raw.contains(&format!("\"link\": \"{}\"", home_relative(&link))));
+    assert!(raw.contains(&format!("\"src\": \"{}\"", home_relative(&src))));
+    assert!(!raw.contains(home.to_str().expect("utf-8 home path")));
 }
 
 #[test]

@@ -95,7 +95,18 @@ impl ConfigFile {
             // LCOV_EXCL_STOP
         }
 
-        let mut json = serde_json::to_string_pretty(self).map_err(|err| {
+        let mut storage_config = self.clone();
+        // LCOV_EXCL_START
+        crate::paths::collapse_config_home_paths(&mut storage_config).map_err(|err| {
+            ConfigError::Io {
+                path: path.to_path_buf(),
+                kind: err.kind(),
+                message: err.to_string(),
+            }
+        })?;
+        // LCOV_EXCL_STOP
+
+        let mut json = serde_json::to_string_pretty(&storage_config).map_err(|err| {
             // LCOV_EXCL_START
             ConfigError::Json {
                 path: path.to_path_buf(),
@@ -124,6 +135,13 @@ impl ConfigFile {
                 path: path.to_path_buf(),
                 message: err.to_string(),
             })?;
+        // LCOV_EXCL_START
+        crate::paths::expand_config_home_markers(&mut config).map_err(|err| ConfigError::Io {
+            path: path.to_path_buf(),
+            kind: err.kind(),
+            message: err.to_string(),
+        })?;
+        // LCOV_EXCL_STOP
         config.validate()?;
         config.sort_links();
         Ok(config)
@@ -196,6 +214,18 @@ pub enum ConfigError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn home_dir() -> PathBuf {
+        PathBuf::from(std::env::var_os("HOME").expect("HOME must be set for config tests"))
+    }
+
+    fn home_relative(path: &Path) -> String {
+        let home = home_dir();
+        let relative = path
+            .strip_prefix(&home)
+            .expect("test path should be under HOME");
+        format!("~/{}", relative.to_string_lossy())
+    }
 
     #[test]
     fn default_config_uses_current_version_and_has_no_links() {
@@ -329,6 +359,31 @@ mod tests {
                 LinkEntry::new("links/alpha", "sources/alpha"),
                 LinkEntry::new("links/beta", "sources/beta"),
             ]
+        );
+    }
+    #[test]
+    fn saving_and_loading_config_uses_home_marker_for_home_paths() {
+        let dir = tempfile::tempdir().expect("create temporary directory");
+        let path = dir.path().join("symbolic.json");
+        let home = home_dir();
+        let link = home.join("links/app/settings.toml");
+        let src = home.join("sources/app/settings.toml");
+        let mut config = ConfigFile {
+            version: CURRENT_VERSION,
+            links: vec![LinkEntry::new(&link, &src)],
+        };
+
+        config.save(&path).expect("save config");
+
+        let raw = std::fs::read_to_string(&path).expect("read saved config");
+        assert!(raw.contains(&format!("\"link\": \"{}\"", home_relative(&link))));
+        assert!(raw.contains(&format!("\"src\": \"{}\"", home_relative(&src))));
+        assert!(!raw.contains(home.to_str().expect("utf-8 home path")));
+
+        let loaded = ConfigFile::load(&path).expect("load config");
+        assert_eq!(
+            loaded.links,
+            vec![LinkEntry::new(home.join("links/app/settings.toml"), src)]
         );
     }
     #[test]

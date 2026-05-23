@@ -1,5 +1,6 @@
 use std::{
-    io,
+    ffi::OsStr,
+    io::{self, ErrorKind},
     path::{Component, Path, PathBuf},
 };
 
@@ -26,11 +27,70 @@ pub(crate) fn normalize_absolute_lexical(path: &Path) -> PathBuf {
     normalized
 }
 
-pub(crate) fn absolute_lexical(path: &Path) -> io::Result<PathBuf> {
+fn home_dir() -> io::Result<PathBuf> {
+    match std::env::var_os("HOME") {
+        Some(home) if !home.as_os_str().is_empty() => Ok(PathBuf::from(home)),
+        // LCOV_EXCL_START
+        _ => Err(io::Error::new(ErrorKind::InvalidInput, "HOME is not set")),
+        // LCOV_EXCL_STOP
+    }
+}
+
+fn normalize_home_path(path: PathBuf) -> io::Result<PathBuf> {
     if path.is_absolute() {
+        Ok(normalize_absolute_lexical(&path))
+    } else {
+        // LCOV_EXCL_START
+        std::env::current_dir().map(|cwd| normalize_absolute_lexical(&cwd.join(path)))
+        // LCOV_EXCL_STOP
+    }
+}
+
+fn expand_home_marker(path: &Path) -> io::Result<Option<PathBuf>> {
+    let mut components = path.components();
+
+    let Some(Component::Normal(first)) = components.next() else {
+        return Ok(None);
+    };
+
+    if first != OsStr::new("~") {
+        return Ok(None);
+    }
+
+    let mut expanded = home_dir()?;
+    for component in components {
+        expanded.push(component.as_os_str());
+    }
+
+    normalize_home_path(expanded).map(Some)
+}
+
+pub(crate) fn absolute_lexical(path: &Path) -> io::Result<PathBuf> {
+    if let Some(expanded) = expand_home_marker(path)? {
+        Ok(expanded)
+    } else if path.is_absolute() {
         Ok(normalize_absolute_lexical(path))
     } else {
         std::env::current_dir().map(|cwd| normalize_absolute_lexical(&cwd.join(path)))
+    }
+}
+
+pub(crate) fn collapse_home_path(path: &Path) -> io::Result<PathBuf> {
+    if !path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+
+    let home = normalize_home_path(home_dir()?)?;
+    let normalized = normalize_absolute_lexical(path);
+
+    let Ok(relative) = normalized.strip_prefix(&home) else {
+        return Ok(path.to_path_buf());
+    };
+
+    if relative.as_os_str().is_empty() {
+        Ok(PathBuf::from("~"))
+    } else {
+        Ok(PathBuf::from("~").join(relative))
     }
 }
 
@@ -42,6 +102,28 @@ pub(crate) fn resolve_symlink_target_lexical(link: &Path, target: &Path) -> io::
     } else {
         absolute_lexical(target)
     }
+}
+
+pub(crate) fn expand_config_home_markers(config: &mut ConfigFile) -> io::Result<()> {
+    for entry in &mut config.links {
+        if let Some(link) = expand_home_marker(&entry.link)? {
+            entry.link = link;
+        }
+        if let Some(src) = expand_home_marker(&entry.src)? {
+            entry.src = src;
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn collapse_config_home_paths(config: &mut ConfigFile) -> io::Result<()> {
+    for entry in &mut config.links {
+        entry.link = collapse_home_path(&entry.link)?;
+        entry.src = collapse_home_path(&entry.src)?;
+    }
+
+    Ok(())
 }
 
 pub(crate) fn normalize_config_entries(config: &mut ConfigFile) -> io::Result<()> {
@@ -73,6 +155,85 @@ mod tests {
 
         assert!(resolved.is_absolute());
         assert!(resolved.ends_with(target));
+    }
+
+    fn home_dir() -> PathBuf {
+        PathBuf::from(std::env::var_os("HOME").expect("HOME must be set for path tests"))
+    }
+
+    fn home_relative_json_fragment(path: &Path) -> String {
+        let home = home_dir();
+        let relative = path
+            .strip_prefix(&home)
+            .expect("test path should be under HOME");
+        format!("~/{}", relative.to_string_lossy())
+    }
+
+    #[test]
+    fn absolute_lexical_expands_home_marker_for_operations() {
+        let home = home_dir();
+
+        assert_eq!(absolute_lexical(Path::new("~")).expect("expand home"), home);
+        assert_eq!(
+            absolute_lexical(Path::new("~/symcfg/../portable")).expect("expand home child"),
+            home_dir().join("portable")
+        );
+    }
+
+    #[test]
+    fn normalize_config_entries_expands_home_marker_paths_for_operations() {
+        let home = home_dir();
+        let mut config = ConfigFile {
+            version: crate::config::CURRENT_VERSION,
+            links: vec![crate::config::LinkEntry::new(
+                "~/links/editor.toml",
+                "~/sources/editor.toml",
+            )],
+        };
+
+        normalize_config_entries(&mut config).expect("normalize config entries");
+
+        assert_eq!(
+            config.links,
+            vec![crate::config::LinkEntry::new(
+                home.join("links/editor.toml"),
+                home.join("sources/editor.toml"),
+            )]
+        );
+    }
+
+    #[test]
+    fn collapse_home_path_collapses_home_directory_to_home_marker() {
+        assert_eq!(
+            collapse_home_path(&home_dir()).expect("collapse home"),
+            PathBuf::from("~")
+        );
+    }
+
+    #[test]
+    fn saving_config_collapses_home_paths_to_home_marker() {
+        let dir = tempfile::tempdir().expect("create temporary directory");
+        let path = dir.path().join("symbolic.json");
+        let home = home_dir();
+        let link = home.join("links/editor.toml");
+        let src = home.join("sources/editor.toml");
+        let mut config = ConfigFile {
+            version: crate::config::CURRENT_VERSION,
+            links: vec![crate::config::LinkEntry::new(&link, &src)],
+        };
+
+        config.save(&path).expect("save config");
+
+        let actual = std::fs::read_to_string(&path).expect("read saved config");
+        assert!(actual.contains(&format!(
+            "\"link\": \"{}\"",
+            home_relative_json_fragment(&link)
+        )));
+        assert!(actual.contains(&format!(
+            "\"src\": \"{}\"",
+            home_relative_json_fragment(&src)
+        )));
+        assert!(!actual.contains(home.to_str().expect("utf-8 home path")));
     }
 }
 // LCOV_EXCL_STOP
