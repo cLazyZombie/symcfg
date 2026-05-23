@@ -3,6 +3,7 @@ name = "symcfg"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+readme = "README.md"
 description = "Command-line tool for generating symbolic file configuration."
 repository = "https://github.com/cLazyZombie/symcfg"
 
