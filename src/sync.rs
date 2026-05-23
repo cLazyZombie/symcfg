@@ -6,7 +6,10 @@ use std::{
 
 use thiserror::Error;
 
-use crate::config::{ConfigError, ConfigFile, LinkEntry};
+use crate::{
+    config::{ConfigError, ConfigFile, LinkEntry},
+    paths,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncDeleteDecision {
@@ -54,10 +57,13 @@ pub fn sync_config<P: SyncPrompter>(
     } = options;
 
     let mut config = ConfigFile::load(config_path)?;
+    paths::normalize_config_entries(&mut config).map_err(|err| io_error(config_path, err))?;
+    let source_root =
+        paths::absolute_lexical(source_root).map_err(|err| io_error(source_root, err))?;
     let stale_entries: Vec<LinkEntry> = config
         .links
         .iter()
-        .filter(|entry| entry.src.starts_with(source_root) && !entry.src.exists())
+        .filter(|entry| entry.src.starts_with(&source_root) && !entry.src.exists())
         .cloned()
         .collect();
 
@@ -132,7 +138,10 @@ fn delete_matching_symlink(entry: &LinkEntry) -> Result<LinkDeleteStatus, SyncEr
     }
 
     let target = fs::read_link(&entry.link).map_err(|err| io_error(&entry.link, err))?;
-    if target != entry.src {
+    let target = paths::resolve_symlink_target_lexical(&entry.link, &target)
+        .map_err(|err| io_error(&entry.link, err))?;
+    let src = paths::absolute_lexical(&entry.src).map_err(|err| io_error(&entry.src, err))?;
+    if target != src {
         return Ok(LinkDeleteStatus::Kept);
     }
 
@@ -319,6 +328,40 @@ mod tests {
         );
         assert!(read_links(&config_path).is_empty());
     }
+    #[test]
+    fn stale_source_is_removed_when_source_root_contains_parent_component() {
+        let dir = tempfile::tempdir().expect("create temporary directory");
+        let source_root = dir.path().join("source-root");
+        let lexical_source_root = dir.path().join("sibling/../source-root");
+        let stale_src = source_root.join("missing-tool");
+        let link = dir.path().join("links/missing-tool");
+        let config_path = dir.path().join("symbolic.json");
+        fs::create_dir_all(dir.path().join("sibling")).expect("create sibling directory");
+        fs::create_dir_all(&source_root).expect("create source root");
+        write_config(&config_path, vec![entry(&link, &stale_src)]);
+
+        let report = sync_config(
+            &lexical_source_root,
+            &config_path,
+            SyncOptions {
+                yes: true,
+                auto_delete_policy: Some(AutoDeletePolicy::KeepLinks),
+                prompter: NoopPrompter,
+            },
+        )
+        .expect("sync config");
+
+        assert_eq!(
+            report,
+            SyncReport {
+                stale: 1,
+                removed_entries: 1,
+                deleted_links: 0,
+                kept_links: 0,
+            }
+        );
+        assert!(read_links(&config_path).is_empty());
+    }
 
     #[test]
     fn missing_source_outside_source_root_is_not_stale_and_remains_in_config() {
@@ -459,6 +502,41 @@ mod tests {
         );
         assert!(read_links(&config_path).is_empty());
         assert!(!link.exists());
+        assert!(fs::symlink_metadata(&link).is_err());
+    }
+    #[test]
+    fn delete_links_policy_deletes_stale_symlink_with_relative_target_resolving_to_recorded_src() {
+        let dir = tempfile::tempdir().expect("create temporary directory");
+        let source_root = dir.path().join("source-root");
+        let stale_src = source_root.join("missing-tool");
+        let link = dir.path().join("links/missing-tool");
+        let config_path = dir.path().join("symbolic.json");
+        fs::create_dir_all(link.parent().expect("link has parent")).expect("create link parent");
+        symlink(Path::new("../source-root/missing-tool"), &link)
+            .expect("create stale relative symlink");
+        write_config(&config_path, vec![entry(&link, &stale_src)]);
+
+        let report = sync_config(
+            &source_root,
+            &config_path,
+            SyncOptions {
+                yes: true,
+                auto_delete_policy: Some(AutoDeletePolicy::DeleteLinks),
+                prompter: NoopPrompter,
+            },
+        )
+        .expect("sync config");
+
+        assert_eq!(
+            report,
+            SyncReport {
+                stale: 1,
+                removed_entries: 1,
+                deleted_links: 1,
+                kept_links: 0,
+            }
+        );
+        assert!(read_links(&config_path).is_empty());
         assert!(fs::symlink_metadata(&link).is_err());
     }
 

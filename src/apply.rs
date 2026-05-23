@@ -7,7 +7,10 @@ use std::{
 
 use thiserror::Error;
 
-use crate::config::{ConfigError, ConfigFile, LinkEntry};
+use crate::{
+    config::{ConfigError, ConfigFile, LinkEntry},
+    paths,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplyDecision {
@@ -67,31 +70,46 @@ pub fn apply_config<P: ApplyPrompter>(
     };
 
     for entry in &config.links {
-        match fs::symlink_metadata(&entry.link) {
+        let link = paths::absolute_lexical(&entry.link).map_err(|source| ApplyError::Io {
+            path: entry.link.clone(),
+            source,
+        })?;
+        let src = paths::absolute_lexical(&entry.src).map_err(|source| ApplyError::Io {
+            path: entry.src.clone(),
+            source,
+        })?;
+
+        match fs::symlink_metadata(&link) {
             Ok(metadata) => {
                 if metadata.file_type().is_symlink() {
-                    let target = fs::read_link(&entry.link).map_err(|source| ApplyError::Io {
-                        path: entry.link.clone(),
+                    let target = fs::read_link(&link).map_err(|source| ApplyError::Io {
+                        path: link.clone(),
                         source,
                     })?;
+                    let target = paths::resolve_symlink_target_lexical(&link, &target).map_err(
+                        |source| ApplyError::Io {
+                            path: link.clone(),
+                            source,
+                        },
+                    )?;
 
-                    if target == entry.src {
+                    if target == src {
                         report.skipped += 1;
                     } else {
                         report.conflicts.push(ApplyConflict {
-                            link: entry.link.clone(),
-                            src: entry.src.clone(),
+                            link: link.clone(),
+                            src: src.clone(),
                         });
                     }
                 } else {
                     report.conflicts.push(ApplyConflict {
-                        link: entry.link.clone(),
-                        src: entry.src.clone(),
+                        link: link.clone(),
+                        src: src.clone(),
                     });
                 }
             }
             Err(err) if err.kind() == ErrorKind::NotFound => {
-                if !link_parent_exists(&entry.link) {
+                if !link_parent_exists(&link) {
                     report.skipped += 1;
                     continue;
                 }
@@ -104,11 +122,9 @@ pub fn apply_config<P: ApplyPrompter>(
 
                 match decision {
                     ApplyDecision::Create => {
-                        unix_fs::symlink(&entry.src, &entry.link).map_err(|source| {
-                            ApplyError::Io {
-                                path: entry.link.clone(),
-                                source,
-                            }
+                        unix_fs::symlink(&src, &link).map_err(|source| ApplyError::Io {
+                            path: link.clone(),
+                            source,
                         })?;
                         report.created += 1;
                     }
@@ -119,7 +135,7 @@ pub fn apply_config<P: ApplyPrompter>(
             }
             Err(source) => {
                 return Err(ApplyError::Io {
-                    path: entry.link.clone(),
+                    path: link.clone(),
                     source,
                 });
             }
@@ -251,6 +267,36 @@ mod tests {
         assert_eq!(report.skipped, 1);
         assert!(report.conflicts.is_empty());
         assert_symlink_to(&link, &src);
+    }
+    #[test]
+    fn apply_config_skips_existing_relative_symlink_resolving_to_configured_absolute_src() {
+        let temp = TempDir::new().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        let src = source_file(&temp, "source.txt");
+        let link_dir = temp.path().join("links");
+        fs::create_dir_all(&link_dir).expect("create link parent");
+        let link = link_dir.join("link.txt");
+        unix_fs::symlink(Path::new("../source.txt"), &link).expect("create relative symlink");
+        write_config(&config_path, vec![LinkEntry::new(&link, &src)]);
+
+        let report = apply_config(
+            &config_path,
+            ApplyOptions {
+                yes: false,
+                prompter: RecordingPrompter::new(ApplyDecision::Create, Rc::new(Cell::new(0))),
+            },
+        )
+        .expect("apply config");
+
+        assert_eq!(report.created, 0);
+        assert_eq!(report.skipped, 1);
+        assert!(report.conflicts.is_empty());
+        let target = fs::read_link(&link).expect("read symlink");
+        assert_eq!(target, Path::new("../source.txt"));
+        assert_eq!(
+            paths::resolve_symlink_target_lexical(&link, &target).expect("resolve symlink"),
+            paths::absolute_lexical(&src).expect("absolute source")
+        );
     }
 
     #[test]

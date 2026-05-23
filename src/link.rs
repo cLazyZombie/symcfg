@@ -1,4 +1,7 @@
-use crate::config::{ConfigError, ConfigFile, LinkEntry, MergeStatus};
+use crate::{
+    config::{ConfigError, ConfigFile, LinkEntry, MergeStatus},
+    paths,
+};
 use std::fmt;
 use std::fs;
 use std::io::ErrorKind;
@@ -68,16 +71,27 @@ pub fn link_and_register<P: ParentPrompter>(
     config_path: &Path,
     mut options: LinkOptions<P>,
 ) -> Result<LinkReport, LinkError> {
+    let src = paths::absolute_lexical(src).map_err(|source| LinkError::Io {
+        path: src.to_path_buf(),
+        source,
+    })?;
+    let link = paths::absolute_lexical(link).map_err(|source| LinkError::Io {
+        path: link.to_path_buf(),
+        source,
+    })?;
+
     if !src.exists() {
-        return Err(LinkError::MissingSource {
-            path: src.to_path_buf(),
-        });
+        return Err(LinkError::MissingSource { path: src });
     }
 
     let mut config =
         ConfigFile::load_or_default(config_path).map_err(|source| LinkError::Config { source })?;
+    paths::normalize_config_entries(&mut config).map_err(|source| LinkError::Io {
+        path: config_path.to_path_buf(),
+        source,
+    })?;
     let merge_status = config
-        .merge_entry(LinkEntry::new(link, src))
+        .merge_entry(LinkEntry::new(link.clone(), src.clone()))
         .map_err(LinkError::from_config_error)?;
 
     let registered = merge_status == MergeStatus::Added;
@@ -107,13 +121,18 @@ pub fn link_and_register<P: ParentPrompter>(
         }
     }
 
-    let created_link = match fs::symlink_metadata(link) {
+    let created_link = match fs::symlink_metadata(&link) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
-            let existing_target = fs::read_link(link).map_err(|err| LinkError::Io {
+            let existing_target = fs::read_link(&link).map_err(|err| LinkError::Io {
                 path: link.to_path_buf(),
                 source: err,
             })?;
 
+            let existing_target = paths::resolve_symlink_target_lexical(&link, &existing_target)
+                .map_err(|err| LinkError::Io {
+                    path: link.to_path_buf(),
+                    source: err,
+                })?;
             if existing_target != src {
                 return Err(LinkError::FilesystemConflict {
                     path: link.to_path_buf(),
@@ -128,7 +147,7 @@ pub fn link_and_register<P: ParentPrompter>(
             });
         }
         Err(err) if err.kind() == ErrorKind::NotFound => {
-            unix_fs::symlink(src, link).map_err(|err| LinkError::Io {
+            unix_fs::symlink(&src, &link).map_err(|err| LinkError::Io {
                 path: link.to_path_buf(),
                 source: err,
             })?;
@@ -142,9 +161,13 @@ pub fn link_and_register<P: ParentPrompter>(
         }
     };
 
-    config
-        .save(config_path)
-        .map_err(|source| LinkError::Config { source })?;
+    if let Err(source) = config.save(config_path) {
+        if created_link {
+            let _ = remove_created_symlink(&link, &src);
+        }
+
+        return Err(LinkError::Config { source });
+    }
 
     Ok(LinkReport {
         created_link,
@@ -159,6 +182,42 @@ fn create_parent(parent: &Path) -> Result<(), LinkError> {
         path: parent.to_path_buf(),
         source: err,
     })
+}
+
+fn remove_created_symlink(link: &Path, src: &Path) -> Result<(), LinkError> {
+    let metadata = match fs::symlink_metadata(link) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(source) => {
+            return Err(LinkError::Io {
+                path: link.to_path_buf(),
+                source,
+            });
+        }
+    };
+
+    if !metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+
+    let target = fs::read_link(link).map_err(|source| LinkError::Io {
+        path: link.to_path_buf(),
+        source,
+    })?;
+    let target =
+        paths::resolve_symlink_target_lexical(link, &target).map_err(|source| LinkError::Io {
+            path: link.to_path_buf(),
+            source,
+        })?;
+
+    if target == src {
+        fs::remove_file(link).map_err(|source| LinkError::Io {
+            path: link.to_path_buf(),
+            source,
+        })?;
+    }
+
+    Ok(())
 }
 
 impl LinkError {
@@ -227,8 +286,9 @@ mod tests {
     use super::*;
     use crate::config::{CURRENT_VERSION, ConfigFile, LinkEntry};
     use std::collections::VecDeque;
+    use std::env;
     use std::fs;
-    use std::os::unix::fs::{self as unix_fs, MetadataExt};
+    use std::os::unix::fs::{self as unix_fs, MetadataExt, PermissionsExt};
 
     #[derive(Debug, Default)]
     struct RecordingPrompter {
@@ -261,6 +321,23 @@ mod tests {
     impl ParentPrompter for PanicPrompter {
         fn decide_create_parent(&mut self, parent: &Path) -> Result<ParentDecision, LinkError> {
             panic!("prompter must not be called for {parent:?}")
+        }
+    }
+    struct CurrentDirGuard {
+        original: PathBuf,
+    }
+
+    impl CurrentDirGuard {
+        fn change_to(path: &Path) -> Self {
+            let original = env::current_dir().expect("read current directory");
+            env::set_current_dir(path).expect("change current directory");
+            Self { original }
+        }
+    }
+
+    impl Drop for CurrentDirGuard {
+        fn drop(&mut self) {
+            env::set_current_dir(&self.original).expect("restore current directory");
         }
     }
 
@@ -333,6 +410,63 @@ mod tests {
             load_config(&config_path).links,
             vec![LinkEntry::new(link, src)]
         );
+    }
+    #[test]
+    fn creates_symlink_from_relative_paths_and_registers_normalized_absolute_paths() {
+        let (_dir, root) = temp_root();
+        let src = write_source(&root, "src/app.toml");
+        let link = root.join("links/app.toml");
+        fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
+        let config_path = root.join("symbolic.json");
+        let _cwd = CurrentDirGuard::change_to(&root);
+
+        let report = link_and_register(
+            Path::new("src/app.toml"),
+            Path::new("links/app.toml"),
+            &config_path,
+            LinkOptions {
+                yes: false,
+                prompter: RecordingPrompter::default(),
+            },
+        )
+        .expect("link and register relative paths");
+
+        assert!(report.created_link);
+        assert_eq!(link.canonicalize().expect("resolve created symlink"), src);
+        assert_eq!(
+            load_config(&config_path).links,
+            vec![LinkEntry::new(link, src)]
+        );
+    }
+
+    #[test]
+    fn rolls_back_new_symlink_when_config_save_fails() {
+        let (_dir, root) = temp_root();
+        let src = write_source(&root, "src/app.toml");
+        let link = root.join("links/app.toml");
+        fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
+        let config_path = root.join("symbolic.json");
+        save_config(&config_path, Vec::new());
+        let mut permissions = fs::metadata(&config_path)
+            .expect("config metadata")
+            .permissions();
+        permissions.set_mode(0o444);
+        fs::set_permissions(&config_path, permissions).expect("make config read-only");
+
+        let err = link_and_register(
+            &src,
+            &link,
+            &config_path,
+            LinkOptions {
+                yes: false,
+                prompter: RecordingPrompter::default(),
+            },
+        )
+        .expect_err("config save should fail");
+
+        assert!(matches!(err, LinkError::Config { .. }));
+        assert!(!link.exists());
+        assert!(fs::symlink_metadata(&link).is_err());
     }
 
     #[test]

@@ -105,7 +105,8 @@ fn search_writes_default_symbolic_json_with_link_and_src_entries() {
             link_root.to_str().expect("utf-8 link path"),
         ])
         .assert()
-        .success();
+        .success()
+        .stdout("Search complete: matched=1, added=1, duplicate=0, conflict=0\n");
 
     let config = temp.path().join(DEFAULT_CONFIG);
     assert!(config.exists(), "search should create symbolic.json in cwd");
@@ -168,7 +169,10 @@ fn link_yes_creates_missing_parent_symlink_and_registers_entry() {
             config.to_str().expect("utf-8 config path"),
         ])
         .assert()
-        .success();
+        .success()
+        .stdout(
+            "Link complete: created=true, parent_created=true, registered=true, duplicate=false\n",
+        );
 
     assert_symlink_points_to(&link, &src);
     assert_has_entry(&config, &link, &src);
@@ -220,11 +224,7 @@ fn apply_yes_creates_missing_symlinks_and_prints_english_summary_counts() {
         ])
         .assert()
         .success()
-        .stdout(
-            predicate::str::contains("created")
-                .and(predicate::str::contains("skipped"))
-                .and(predicate::str::contains("conflict")),
-        );
+        .stdout("Apply complete: created=1, skipped=0, conflict=0\n");
 
     assert_symlink_points_to(&link, &src);
 }
@@ -248,9 +248,7 @@ fn apply_yes_skips_link_when_parent_directory_is_missing() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "Apply complete: created=0, skipped=1, conflict=0",
-        ));
+        .stdout("Apply complete: created=0, skipped=1, conflict=0\n");
 
     assert!(!link.parent().expect("link parent").exists());
     assert!(!link.exists());
@@ -332,7 +330,7 @@ fn sync_keep_links_removes_stale_entries_keeps_link_and_prints_summary() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("removed").and(predicate::str::contains("kept")));
+        .stdout("Sync complete: stale=1, removed=1, deleted=0, kept=1\n");
 
     assert_no_entry(&config, &stale_link);
     assert_symlink_exists(&stale_link);
@@ -374,7 +372,7 @@ fn sync_delete_links_removes_stale_entries_and_deletes_only_matching_symlink() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("removed").and(predicate::str::contains("deleted")));
+        .stdout("Sync complete: stale=2, removed=2, deleted=1, kept=1\n");
 
     assert_no_entry(&config, &matching_link);
     assert_no_entry(&config, &nonmatching_link);
@@ -389,20 +387,20 @@ fn sync_delete_links_removes_stale_entries_and_deletes_only_matching_symlink() {
 fn validate_prints_english_success_for_valid_config_and_failure_for_invalid_config() {
     let temp = TempDir::new().expect("create temporary directory");
     let valid_config = temp.path().join("valid.json");
-    let invalid_config = temp.path().join("invalid.json");
+    let schema_config = temp.path().join("schema-mismatch.json");
     let src = temp.path().join("sources/vimrc");
     let link = temp.path().join("links/vimrc");
     write_file(&src, "syntax on\n");
     write_config(&valid_config, &[(&link, &src)]);
     fs::write(
-        &invalid_config,
+        &schema_config,
         serde_json::to_string_pretty(&json!({
             "version": 1,
             "links": [{ "link": link, "target": src }]
         }))
-        .expect("serialize invalid config"),
+        .expect("serialize schema mismatch config"),
     )
-    .expect("write invalid config");
+    .expect("write schema mismatch config");
 
     symcfg()
         .current_dir(temp.path())
@@ -420,9 +418,82 @@ fn validate_prints_english_success_for_valid_config_and_failure_for_invalid_conf
         .args([
             "validate",
             "--config",
-            invalid_config.to_str().expect("utf-8 config path"),
+            schema_config.to_str().expect("utf-8 config path"),
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("invalid").or(predicate::str::contains("error")));
+        .stderr(
+            predicate::str::contains("invalid config")
+                .and(predicate::str::contains("missing field `src`")),
+        );
+}
+
+#[test]
+fn sync_prompts_in_english_for_stale_link_delete_and_accepts_yes_on_stdin() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let source_root = temp.path().join("sources");
+    let config = temp.path().join("symbolic.json");
+    let stale_src = source_root.join("removed.conf");
+    let stale_link = temp.path().join("links/removed.conf");
+    fs::create_dir_all(stale_link.parent().expect("stale link parent"))
+        .expect("create link parent");
+    fs::create_dir_all(&source_root).expect("create source root");
+    unix_fs::symlink(&stale_src, &stale_link).expect("create stale symlink");
+    write_config(&config, &[(&stale_link, &stale_src)]);
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "sync",
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+            "--source",
+            source_root.to_str().expect("utf-8 source path"),
+        ])
+        .write_stdin("y\n")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("stale")
+                .and(predicate::str::contains("Delete"))
+                .and(predicate::str::contains("link")),
+        );
+
+    assert_no_entry(&config, &stale_link);
+    assert!(
+        fs::symlink_metadata(&stale_link).is_err(),
+        "stale symlink should be deleted after interactive confirmation"
+    );
+}
+
+#[test]
+fn sync_delete_links_without_yes_fails_instead_of_ignoring_confirmation() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let source_root = temp.path().join("sources");
+    let config = temp.path().join("symbolic.json");
+    let stale_src = source_root.join("removed.conf");
+    let stale_link = temp.path().join("links/removed.conf");
+    fs::create_dir_all(stale_link.parent().expect("stale link parent"))
+        .expect("create link parent");
+    fs::create_dir_all(&source_root).expect("create source root");
+    unix_fs::symlink(&stale_src, &stale_link).expect("create stale symlink");
+    write_config(&config, &[(&stale_link, &stale_src)]);
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "sync",
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+            "--source",
+            source_root.to_str().expect("utf-8 source path"),
+            "--delete-links",
+        ])
+        .write_stdin("y\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--delete-links").and(predicate::str::contains("--yes")));
+
+    assert_has_entry(&config, &stale_link, &stale_src);
+    assert_symlink_points_to(&stale_link, &stale_src);
 }

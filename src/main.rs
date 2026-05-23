@@ -206,9 +206,17 @@ fn run(cli: Cli) -> Result<(), String> {
                 (true, true) => unreachable!("clap prevents mutually exclusive flags"),
             };
 
-            if yes && auto_delete_policy.is_none() {
+            if !yes {
+                if delete_links {
+                    return Err("--delete-links requires --yes".to_owned());
+                }
+
+                if keep_links {
+                    return Err("--keep-links requires --yes".to_owned());
+                }
+            } else if auto_delete_policy.is_none() {
                 return Err(
-                    "Choose whether to delete stale links with --delete-links or keep-links with --keep-links when using --yes"
+                    "Choose whether to delete stale links with --delete-links or keep stale links with --keep-links when using --yes"
                         .to_owned(),
                 );
             }

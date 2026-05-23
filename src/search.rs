@@ -3,7 +3,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::config::{ConfigError, ConfigFile, LinkEntry, MergeStatus};
+use crate::{
+    config::{ConfigError, ConfigFile, LinkEntry, MergeStatus},
+    paths,
+};
 
 use thiserror::Error;
 use walkdir::WalkDir;
@@ -40,12 +43,16 @@ pub fn search_and_update_config(
     link_roots: &[PathBuf],
     config_path: &Path,
 ) -> Result<SearchReport, SearchError> {
-    let canonical_source_root = fs::canonicalize(source_root).map_err(|err| SearchError::Io {
+    let source_root = paths::absolute_lexical(source_root).map_err(|err| SearchError::Io {
         path: source_root.to_path_buf(),
         message: err.to_string(),
     })?;
 
     let mut config = ConfigFile::load_or_default(config_path)?;
+    paths::normalize_config_entries(&mut config).map_err(|err| SearchError::Io {
+        path: config_path.to_path_buf(),
+        message: err.to_string(),
+    })?;
     let mut report = SearchReport {
         matched: 0,
         added: 0,
@@ -66,18 +73,22 @@ pub fn search_and_update_config(
                 continue;
             }
 
-            let link = absolute_path(entry.path())?;
+            let link = paths::absolute_lexical(entry.path()).map_err(|err| SearchError::Io {
+                path: entry.path().to_path_buf(),
+                message: err.to_string(),
+            })?;
             let target = fs::read_link(entry.path()).map_err(|err| SearchError::Io {
                 path: entry.path().to_path_buf(),
                 message: err.to_string(),
             })?;
-            let src = resolve_symlink_target(&link, target);
-            let canonical_src = fs::canonicalize(&src).map_err(|err| SearchError::Io {
-                path: src.clone(),
-                message: err.to_string(),
+            let src = paths::resolve_symlink_target_lexical(&link, &target).map_err(|err| {
+                SearchError::Io {
+                    path: target.clone(),
+                    message: err.to_string(),
+                }
             })?;
 
-            if !canonical_src.starts_with(&canonical_source_root) {
+            if !src.starts_with(&source_root) {
                 continue;
             }
 
@@ -101,29 +112,6 @@ pub fn search_and_update_config(
 
     config.save(config_path)?;
     Ok(report)
-}
-
-fn absolute_path(path: &Path) -> Result<PathBuf, SearchError> {
-    if path.is_absolute() {
-        Ok(path.to_path_buf())
-    } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(path))
-            .map_err(|err| SearchError::Io {
-                path: PathBuf::from("."),
-                message: err.to_string(),
-            })
-    }
-}
-
-fn resolve_symlink_target(link: &Path, target: PathBuf) -> PathBuf {
-    if target.is_absolute() {
-        target
-    } else if let Some(parent) = link.parent() {
-        parent.join(target)
-    } else {
-        target
-    }
 }
 
 #[cfg(test)]
@@ -172,6 +160,30 @@ mod tests {
         assert!(raw_config.contains("\"link\""));
         assert!(raw_config.contains("\"src\""));
         assert!(!raw_config.contains("\"target\""));
+    }
+    #[test]
+    fn stores_normalized_absolute_src_for_relative_symlink_target_under_link_root() {
+        let dir = tempfile::tempdir().expect("create temporary directory");
+        let source_root = dir.path().join("sources");
+        let link_root = dir.path().join("links");
+        let config_path = dir.path().join("symbolic.json");
+        fs::create_dir_all(&source_root).expect("create source root");
+        fs::create_dir_all(&link_root).expect("create link root");
+        let source = source_root.join("tool");
+        let link = link_root.join("tool");
+        touch(&source);
+        symlink(Path::new("../sources/tool"), &link)
+            .expect("create relative symlink under link root");
+
+        let report = search_and_update_config(&source_root, &[link_root], &config_path)
+            .expect("search should succeed");
+
+        assert_eq!(report.matched, 1);
+        assert_eq!(report.added, 1);
+        assert_eq!(
+            load_config(&config_path).links,
+            vec![LinkEntry::new(link, source)]
+        );
     }
 
     #[test]
