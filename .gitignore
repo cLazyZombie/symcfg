@@ -16,3 +16,4 @@ lcov.info
 tmp/
 .env
 .env.*
+symbolic.json

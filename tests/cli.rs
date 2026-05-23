@@ -1,8 +1,4 @@
-use std::{
-    fs,
-    os::unix::fs as unix_fs,
-    path::{Path, PathBuf},
-};
+use std::{fs, os::unix::fs as unix_fs, path::Path};
 
 use assert_cmd::Command;
 use assert_fs::TempDir;
@@ -10,18 +6,6 @@ use predicates::prelude::*;
 use serde_json::{Value, json};
 
 const DEFAULT_CONFIG: &str = "symbolic.json";
-
-fn home_dir() -> PathBuf {
-    PathBuf::from(std::env::var_os("HOME").expect("HOME must be set for CLI tests"))
-}
-
-fn home_relative(path: &Path) -> String {
-    let home = home_dir();
-    let relative = path
-        .strip_prefix(&home)
-        .expect("test path should be under HOME");
-    format!("~/{}", relative.to_string_lossy())
-}
 
 fn symcfg() -> Command {
     Command::cargo_bin("symcfg").expect("symcfg binary is built for integration tests")
@@ -196,11 +180,11 @@ fn link_yes_creates_missing_parent_symlink_and_registers_entry() {
 
 #[test]
 fn link_yes_writes_home_relative_config_paths_for_home_tempdir() {
-    let home = home_dir();
-    let temp = tempfile::tempdir_in(&home).expect("create temporary directory under home");
-    let config = temp.path().join("config/symbolic.json");
-    let src = temp.path().join("sources/editor.toml");
-    let link = temp.path().join("links/missing/editor.toml");
+    let temp = TempDir::new().expect("create temporary directory");
+    let fake_home = temp.path().join("home/user");
+    let config = fake_home.join("config/symbolic.json");
+    let src = fake_home.join("sources/editor.toml");
+    let link = fake_home.join("links/missing/editor.toml");
     write_file(&src, "tab_width = 4\n");
 
     symcfg()
@@ -213,6 +197,7 @@ fn link_yes_writes_home_relative_config_paths_for_home_tempdir() {
             "--config",
             config.to_str().expect("utf-8 config path"),
         ])
+        .env("HOME", &fake_home)
         .assert()
         .success()
         .stdout(
@@ -222,9 +207,22 @@ fn link_yes_writes_home_relative_config_paths_for_home_tempdir() {
     assert_symlink_points_to(&link, &src);
 
     let raw = fs::read_to_string(&config).expect("read config");
-    assert!(raw.contains(&format!("\"link\": \"{}\"", home_relative(&link))));
-    assert!(raw.contains(&format!("\"src\": \"{}\"", home_relative(&src))));
-    assert!(!raw.contains(home.to_str().expect("utf-8 home path")));
+    let expected_link = format!(
+        "~/{}",
+        link.strip_prefix(&fake_home)
+            .expect("link should be under fake home")
+            .to_string_lossy()
+    );
+    let expected_src = format!(
+        "~/{}",
+        src.strip_prefix(&fake_home)
+            .expect("source should be under fake home")
+            .to_string_lossy()
+    );
+
+    assert!(raw.contains(&format!("\"link\": \"{expected_link}\"")));
+    assert!(raw.contains(&format!("\"src\": \"{expected_src}\"")));
+    assert!(!raw.contains(fake_home.to_str().expect("utf-8 fake home path")));
 }
 
 #[test]

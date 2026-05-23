@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::ErrorKind,
     path::{Path, PathBuf},
 };
 
@@ -47,6 +48,14 @@ pub fn search_and_update_config(
         // LCOV_EXCL_START
         SearchError::Io {
             path: source_root.to_path_buf(),
+            message: err.to_string(),
+        }
+    })?;
+    // LCOV_EXCL_STOP
+    let source_root_canonical = fs::canonicalize(&source_root).map_err(|err| {
+        // LCOV_EXCL_START
+        SearchError::Io {
+            path: source_root.clone(),
             message: err.to_string(),
         }
     })?;
@@ -110,7 +119,20 @@ pub fn search_and_update_config(
             })?;
             // LCOV_EXCL_STOP
 
-            if !src.starts_with(&source_root) {
+            let canonical_src = match fs::canonicalize(&src) {
+                Ok(path) => path,
+                Err(err) if err.kind() == ErrorKind::NotFound => continue,
+                // LCOV_EXCL_START
+                Err(err) => {
+                    return Err(SearchError::Io {
+                        path: src.clone(),
+                        message: err.to_string(),
+                    });
+                    // LCOV_EXCL_STOP
+                }
+            };
+
+            if !canonical_src.starts_with(&source_root_canonical) {
                 continue;
             }
 
@@ -260,6 +282,61 @@ mod tests {
             load_config(&config_path).links,
             vec![LinkEntry::new(inside_link, inside_source)]
         );
+    }
+
+    #[test]
+    fn ignores_symlink_whose_target_does_not_exist_without_failing_search() {
+        let dir = tempfile::tempdir().expect("create temporary directory");
+        let source_root = dir.path().join("sources");
+        let link_root = dir.path().join("links");
+        let config_path = dir.path().join("symbolic.json");
+        fs::create_dir_all(&source_root).expect("create source root");
+        fs::create_dir_all(&link_root).expect("create link root");
+
+        let missing_link = link_root.join("missing-tool");
+        let missing_source = source_root.join("missing-tool");
+        let kept_source = source_root.join("kept-tool");
+        let kept_link = link_root.join("kept-tool");
+        symlink(&missing_source, &missing_link).expect("create dangling symlink");
+        touch(&kept_source);
+        symlink(&kept_source, &kept_link).expect("create kept symlink");
+
+        let report = search_and_update_config(&source_root, &[link_root], &config_path)
+            .expect("search should succeed");
+
+        assert_eq!(report.matched, 1);
+        assert_eq!(report.added, 1);
+        assert_eq!(
+            load_config(&config_path).links,
+            vec![LinkEntry::new(kept_link, kept_source)]
+        );
+    }
+
+    #[test]
+    fn ignores_symlink_whose_lexical_source_path_escapes_source_root_after_resolution() {
+        let dir = tempfile::tempdir().expect("create temporary directory");
+        let source_root = dir.path().join("sources");
+        let outside_root = dir.path().join("outside");
+        let link_root = dir.path().join("links");
+        let config_path = dir.path().join("symbolic.json");
+        fs::create_dir_all(&source_root).expect("create source root");
+        fs::create_dir_all(&outside_root).expect("create outside root");
+        fs::create_dir_all(&link_root).expect("create link root");
+
+        let outside_source = outside_root.join("tool");
+        let shared_source_dir = source_root.join("shared");
+        let lexical_source = shared_source_dir.join("tool");
+        let link = link_root.join("tool");
+        touch(&outside_source);
+        symlink(&outside_root, &shared_source_dir).expect("create shared source directory symlink");
+        symlink(&lexical_source, &link).expect("create symlink through shared source directory");
+
+        let report = search_and_update_config(&source_root, &[link_root], &config_path)
+            .expect("search should succeed");
+
+        assert_eq!(report.matched, 0);
+        assert_eq!(report.added, 0);
+        assert_eq!(load_config(&config_path).links, Vec::<LinkEntry>::new());
     }
 
     #[test]
