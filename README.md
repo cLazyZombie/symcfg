@@ -64,6 +64,19 @@ symcfg link <src> <link> [-c symbolic.json] [-y]
 `src`를 가리키는 `link`를 만들고 설정 파일에 등록합니다. 부모 디렉터리가 없으면 확인하며, `--yes`를 주면 생성합니다.
 
 ```sh
+symcfg import <link> <src> [-c symbolic.json] [-y]
+```
+
+이미 애플리케이션 위치에 있는 일반 파일 `link`를 `src`로 복사한 뒤, 원래 `link` 위치를 `src`를 가리키는 심볼릭 링크로 바꾸고 설정 파일에 등록합니다.
+예를 들어 `~/.zshrc`가 이미 일반 파일이면 다음 명령으로 저장소 안의 `zsh/zshrc`로 가져오고 `~/.zshrc`를 링크로 바꿀 수 있습니다.
+
+```sh
+symcfg import ~/.zshrc zsh/zshrc --yes
+```
+
+기존 `src`는 덮어쓰지 않습니다. `link`가 이미 심볼릭 링크이면 `search` 또는 `link`를 사용합니다.
+
+```sh
 symcfg apply [-c symbolic.json] [-y]
 ```
 
@@ -96,6 +109,7 @@ symcfg validate [-c symbolic.json]
 ## 안전 규칙
 
 - 기존 일반 파일은 덮어쓰지 않습니다.
+- `import`는 기존 `src`를 덮어쓰지 않고, 일반 파일만 가져옵니다.
 - 다른 원본을 가리키는 기존 링크는 충돌로 처리합니다.
 - `apply`는 링크 부모 디렉터리를 자동 생성하지 않습니다.
 - `sync --delete-links`는 설정과 일치하는 심볼릭 링크만 삭제합니다.

@@ -1,4 +1,8 @@
-use std::{fs, os::unix::fs as unix_fs, path::Path};
+use std::{
+    fs,
+    os::unix::fs::{self as unix_fs, PermissionsExt},
+    path::Path,
+};
 
 use assert_cmd::Command;
 use assert_fs::TempDir;
@@ -387,6 +391,393 @@ fn link_yes_prints_already_linked_and_duplicate_when_entry_exists() {
                 "created=false, parent_created=false, registered=false, duplicate=true"
             )
         ));
+}
+
+#[test]
+fn import_yes_copies_existing_file_replaces_it_with_symlink_and_registers_entry() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let config = temp.path().join("symbolic.json");
+    let link = temp.path().join("app/zshrc");
+    let src = temp.path().join("sources/zshrc");
+    write_file(&link, "setopt prompt_subst\n");
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "import",
+            link.to_str().expect("utf-8 link path"),
+            src.to_str().expect("utf-8 source path"),
+            "--yes",
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+        ])
+        .assert()
+        .success()
+        .stdout(format!(
+            "{}{}{}{}",
+            path_line("created-parent", src.parent().expect("source parent")),
+            item_line("imported", &link, &src),
+            item_line("registered", &link, &src),
+            summary_line(
+                "Import complete",
+                "imported=true, parent_created=true, registered=true, duplicate=false"
+            )
+        ));
+
+    assert_symlink_points_to(&link, &src);
+    assert_eq!(
+        fs::read_to_string(&src).expect("read imported source"),
+        "setopt prompt_subst\n"
+    );
+    assert_has_entry_src(&config, &link, "sources/zshrc");
+}
+
+#[test]
+fn import_yes_prints_duplicate_when_entry_already_exists() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let config = temp.path().join("symbolic.json");
+    let link = temp.path().join("app/gitconfig");
+    let src = temp.path().join("sources/gitconfig");
+    write_file(&link, "[user]\n\tname = Example\n");
+    write_config(&config, &[(&link, &src)]);
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "import",
+            link.to_str().expect("utf-8 link path"),
+            src.to_str().expect("utf-8 source path"),
+            "--yes",
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+        ])
+        .assert()
+        .success()
+        .stdout(format!(
+            "{}{}{}{}",
+            path_line("created-parent", src.parent().expect("source parent")),
+            item_line("imported", &link, &src),
+            item_line("duplicate", &link, &src),
+            summary_line(
+                "Import complete",
+                "imported=true, parent_created=true, registered=false, duplicate=true"
+            )
+        ));
+
+    assert_symlink_points_to(&link, &src);
+    assert_has_entry_src(&config, &link, "sources/gitconfig");
+}
+
+#[test]
+fn import_yes_preserves_original_file_permissions() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let config = temp.path().join("symbolic.json");
+    let link = temp.path().join("app/secret.conf");
+    let src = temp.path().join("sources/secret.conf");
+    write_file(&link, "token = secret\n");
+    fs::set_permissions(&link, fs::Permissions::from_mode(0o600))
+        .expect("restrict original file permissions");
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "import",
+            link.to_str().expect("utf-8 link path"),
+            src.to_str().expect("utf-8 source path"),
+            "--yes",
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+        ])
+        .assert()
+        .success();
+
+    assert_symlink_points_to(&link, &src);
+    assert_eq!(
+        fs::metadata(&src)
+            .expect("read imported source metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+}
+
+#[test]
+fn import_prompts_in_english_and_declines_without_mutating_filesystem() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let config = temp.path().join("symbolic.json");
+    let link = temp.path().join("app/tmux.conf");
+    let src = temp.path().join("sources/tmux.conf");
+    write_file(&link, "set -g mouse on\n");
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "import",
+            link.to_str().expect("utf-8 link path"),
+            src.to_str().expect("utf-8 source path"),
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+        ])
+        .write_stdin("n\n")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Import existing file")
+                .and(predicate::str::contains("replace it with a symlink"))
+                .and(predicate::str::contains("skipped:declined"))
+                .and(predicate::str::contains(
+                    "Import complete    imported=false, parent_created=false, registered=false, duplicate=false",
+                )),
+        );
+
+    assert_eq!(
+        fs::read_to_string(&link).expect("read original link file"),
+        "set -g mouse on\n"
+    );
+    assert!(!src.exists());
+    assert!(!config.exists());
+}
+
+#[test]
+fn import_prompts_in_english_and_accepts_yes_with_existing_source_parent() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let config = temp.path().join("symbolic.json");
+    let link = temp.path().join("app/starship.toml");
+    let src = temp.path().join("sources/starship.toml");
+    write_file(&link, "format = '$all'\n");
+    fs::create_dir_all(src.parent().expect("source parent")).expect("create source parent");
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "import",
+            link.to_str().expect("utf-8 link path"),
+            src.to_str().expect("utf-8 source path"),
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+        ])
+        .write_stdin("y\n")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Import existing file")
+                .and(predicate::str::contains("imported"))
+                .and(predicate::str::contains(
+                    "Import complete    imported=true, parent_created=false, registered=true, duplicate=false",
+                )),
+        );
+
+    assert_symlink_points_to(&link, &src);
+    assert_eq!(
+        fs::read_to_string(&src).expect("read imported source"),
+        "format = '$all'\n"
+    );
+    assert_has_entry_src(&config, &link, "sources/starship.toml");
+}
+
+#[test]
+fn import_fails_when_source_already_exists_without_overwriting_anything() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let config = temp.path().join("symbolic.json");
+    let link = temp.path().join("app/config.toml");
+    let src = temp.path().join("sources/config.toml");
+    write_file(&link, "from app\n");
+    write_file(&src, "from source\n");
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "import",
+            link.to_str().expect("utf-8 link path"),
+            src.to_str().expect("utf-8 source path"),
+            "--yes",
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("source path already exists"));
+
+    assert_eq!(
+        fs::read_to_string(&link).expect("read link file"),
+        "from app\n"
+    );
+    assert_eq!(
+        fs::read_to_string(&src).expect("read source file"),
+        "from source\n"
+    );
+    assert!(!config.exists());
+}
+
+#[test]
+fn import_rejects_source_path_that_is_the_config_file() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let link = temp.path().join("app/zshrc");
+    let config = temp.path().join(DEFAULT_CONFIG);
+    write_file(&link, "setopt prompt_subst\n");
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "import",
+            link.to_str().expect("utf-8 link path"),
+            DEFAULT_CONFIG,
+            "--yes",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "source path must not be the config file",
+        ));
+
+    assert_eq!(
+        fs::read_to_string(&link).expect("read original link file"),
+        "setopt prompt_subst\n"
+    );
+    assert!(!config.exists());
+}
+
+#[test]
+fn import_rejects_source_path_that_aliases_config_file() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let real = temp.path().join("real");
+    let alias = temp.path().join("alias");
+    let link = temp.path().join("app/zshrc");
+    let config = real.join(DEFAULT_CONFIG);
+    let src = alias.join(DEFAULT_CONFIG);
+    fs::create_dir_all(&real).expect("create real config parent");
+    unix_fs::symlink(&real, &alias).expect("create aliased config parent");
+    write_file(&link, "setopt prompt_subst\n");
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "import",
+            link.to_str().expect("utf-8 link path"),
+            src.to_str().expect("utf-8 source path"),
+            "--yes",
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "source path must not be the config file",
+        ));
+
+    assert_eq!(
+        fs::read_to_string(&link).expect("read original link file"),
+        "setopt prompt_subst\n"
+    );
+    assert!(!config.exists());
+    assert!(!src.exists());
+}
+
+#[test]
+fn import_rolls_back_source_copy_when_link_replacement_fails() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let config = temp.path().join("symbolic.json");
+    let link = temp.path().join("app/config.toml");
+    let link_parent = link.parent().expect("link parent");
+    let src = temp.path().join("sources/config.toml");
+    write_file(&link, "from app\n");
+    fs::create_dir_all(src.parent().expect("source parent")).expect("create source parent");
+
+    let mut permissions = fs::metadata(link_parent)
+        .expect("link parent metadata")
+        .permissions();
+    permissions.set_mode(0o555);
+    fs::set_permissions(link_parent, permissions).expect("make link parent read-only");
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "import",
+            link.to_str().expect("utf-8 link path"),
+            src.to_str().expect("utf-8 source path"),
+            "--yes",
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("I/O error"));
+
+    let mut permissions = fs::metadata(link_parent)
+        .expect("link parent metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(link_parent, permissions).expect("restore link parent permissions");
+
+    assert_eq!(
+        fs::read_to_string(&link).expect("read original link file"),
+        "from app\n"
+    );
+    assert!(!src.exists());
+    assert!(!config.exists());
+}
+
+#[test]
+fn import_fails_when_link_is_missing_symlink_or_directory() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let config = temp.path().join("symbolic.json");
+    let missing_link = temp.path().join("app/missing.conf");
+    let symlink_link = temp.path().join("app/symlink.conf");
+    let directory_link = temp.path().join("app/config-dir");
+    let existing_target = temp.path().join("target.conf");
+    let src = temp.path().join("sources/config.conf");
+    write_file(&existing_target, "target\n");
+    fs::create_dir_all(symlink_link.parent().expect("symlink parent")).expect("create app dir");
+    unix_fs::symlink(&existing_target, &symlink_link).expect("create existing symlink");
+    fs::create_dir_all(&directory_link).expect("create directory link path");
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "import",
+            missing_link.to_str().expect("utf-8 missing link path"),
+            src.to_str().expect("utf-8 source path"),
+            "--yes",
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("link path does not exist"));
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "import",
+            symlink_link.to_str().expect("utf-8 symlink path"),
+            src.to_str().expect("utf-8 source path"),
+            "--yes",
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already a symlink"));
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "import",
+            directory_link.to_str().expect("utf-8 directory path"),
+            src.to_str().expect("utf-8 source path"),
+            "--yes",
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not a regular file"));
+
+    assert!(!src.exists());
+    assert!(!config.exists());
+    assert_symlink_points_to(&symlink_link, &existing_target);
+    assert!(directory_link.is_dir());
 }
 
 #[test]
@@ -811,6 +1202,35 @@ fn validate_prints_english_success_for_valid_config_and_failure_for_invalid_conf
             predicate::str::contains("invalid config")
                 .and(predicate::str::contains("missing field `src`")),
         );
+}
+
+#[test]
+fn help_output_explains_top_level_commands_and_import_details() {
+    symcfg().args(["--help"]).assert().success().stdout(
+        predicate::str::contains("Manage configuration files through symbolic links")
+            .and(predicate::str::contains("import"))
+            .and(predicate::str::contains("Import an existing regular file")),
+    );
+
+    symcfg()
+        .args(["import", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Copy the existing regular file")
+                .and(predicate::str::contains(
+                    "refuses to overwrite an existing SRC",
+                ))
+                .and(predicate::str::contains(
+                    "Existing regular file at the application path",
+                )),
+        );
+
+    symcfg().args(["link", "--help"]).assert().success().stdout(
+        predicate::str::contains("Create LINK as a symbolic link").and(predicate::str::contains(
+            "Application path where the symbolic link",
+        )),
+    );
 }
 
 #[test]

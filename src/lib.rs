@@ -1,6 +1,7 @@
 pub const DEFAULT_CONFIG_FILENAME: &str = "symbolic.json";
 pub mod apply;
 pub mod config;
+pub mod import;
 pub mod link;
 pub mod list;
 pub(crate) mod paths;
