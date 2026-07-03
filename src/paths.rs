@@ -170,6 +170,48 @@ pub(crate) fn paths_equivalent(left: &Path, right: &Path) -> bool {
     )
 }
 
+pub(crate) fn normalize_path_identity(path: &Path) -> io::Result<PathBuf> {
+    let path = absolute_lexical(path)?;
+    let Some(name) = path.file_name() else {
+        return Ok(path); // LCOV_EXCL_LINE
+    };
+    let Some(parent) = path.parent() else {
+        return Ok(path); // LCOV_EXCL_LINE
+    };
+
+    let parent = resolve_existing_ancestor(parent)?;
+    Ok(normalize_absolute_lexical(&parent.join(name)))
+}
+
+fn resolve_existing_ancestor(path: &Path) -> io::Result<PathBuf> {
+    let mut missing_components = Vec::new();
+    let mut candidate = path;
+
+    loop {
+        match fs::canonicalize(candidate) {
+            Ok(mut resolved) => {
+                for component in missing_components.iter().rev() {
+                    resolved.push(component);
+                }
+                return Ok(normalize_absolute_lexical(&resolved));
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                let Some(name) = candidate.file_name() else {
+                    return Err(err); // LCOV_EXCL_LINE
+                };
+                missing_components.push(PathBuf::from(name));
+                let Some(parent) = candidate.parent() else {
+                    return Err(err); // LCOV_EXCL_LINE
+                };
+                candidate = parent;
+            }
+            // LCOV_EXCL_START
+            Err(err) => return Err(err),
+            // LCOV_EXCL_STOP
+        }
+    }
+}
+
 pub(crate) fn normalize_config_entries(config: &mut ConfigFile) -> io::Result<()> {
     for entry in &mut config.links {
         entry.link = absolute_lexical(&entry.link)?;
@@ -199,6 +241,22 @@ mod tests {
 
         assert!(resolved.is_absolute());
         assert!(resolved.ends_with(target));
+    }
+
+    #[test]
+    fn normalize_path_identity_does_not_follow_final_symlink() {
+        let dir = tempfile::tempdir().expect("create temporary directory");
+        let source = dir.path().join("source.txt");
+        let link = dir.path().join("link.txt");
+        fs::write(&source, "source\n").expect("write source");
+        std::os::unix::fs::symlink(&source, &link).expect("create symlink");
+
+        let link_identity = normalize_path_identity(&link).expect("normalize link identity");
+        let source_identity = normalize_path_identity(&source).expect("normalize source identity");
+
+        assert_ne!(link_identity, source_identity);
+        assert!(link_identity.ends_with("link.txt"));
+        assert!(source_identity.ends_with("source.txt"));
     }
 
     fn home_dir() -> PathBuf {

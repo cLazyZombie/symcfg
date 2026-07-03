@@ -51,7 +51,23 @@ impl ConfigFile {
             validate_entry(entry)?;
         }
 
+        validate_link_relationships(&self.links)?;
+
         Ok(())
+    }
+
+    pub fn validate_paths(&self, path: &Path) -> Result<(), ConfigError> {
+        let mut normalized = self.clone();
+        crate::paths::normalize_config_entries(&mut normalized).map_err(
+            // LCOV_EXCL_START
+            |err| ConfigError::Io {
+                path: path.to_path_buf(),
+                kind: err.kind(),
+                message: err.to_string(),
+            },
+        )?;
+        // LCOV_EXCL_STOP
+        normalized.validate()
     }
 
     pub fn merge_entry(&mut self, entry: LinkEntry) -> Result<MergeStatus, ConfigError> {
@@ -60,15 +76,19 @@ impl ConfigFile {
         match self
             .links
             .iter()
-            .find(|existing| existing.link == entry.link)
+            .find(|existing| paths_match(&existing.link, &entry.link))
         {
-            Some(existing) if existing.src == entry.src => Ok(MergeStatus::Duplicate),
+            Some(existing) if paths_match(&existing.src, &entry.src) => Ok(MergeStatus::Duplicate),
             Some(existing) => Err(ConfigError::Conflict {
                 link: entry.link,
                 existing_src: existing.src.clone(),
                 new_src: entry.src,
             }),
             None => {
+                let mut next_links = self.links.clone();
+                next_links.push(entry.clone());
+                validate_link_relationships(&next_links)?;
+
                 self.links.push(entry);
                 self.sort_links();
                 Ok(MergeStatus::Added)
@@ -78,6 +98,7 @@ impl ConfigFile {
 
     pub fn save(&mut self, path: &Path) -> Result<(), ConfigError> {
         self.validate()?;
+        self.validate_paths(path)?;
         self.sort_links();
 
         if let Some(parent) = path
@@ -143,6 +164,7 @@ impl ConfigFile {
         })?;
         // LCOV_EXCL_STOP
         config.validate()?;
+        config.validate_paths(path)?;
         config.sort_links();
         Ok(config)
     }
@@ -172,7 +194,60 @@ fn validate_entry(entry: &LinkEntry) -> Result<(), ConfigError> {
         return Err(ConfigError::EmptySrc);
     }
 
+    if entry.link == entry.src {
+        return Err(ConfigError::LinkEqualsSrc {
+            path: entry.link.clone(),
+        });
+    }
+
     Ok(())
+}
+
+fn validate_link_relationships(entries: &[LinkEntry]) -> Result<(), ConfigError> {
+    for (index, entry) in entries.iter().enumerate() {
+        for existing in &entries[..index] {
+            if paths_match(&existing.link, &entry.link) {
+                if paths_match(&existing.src, &entry.src) {
+                    return Err(ConfigError::DuplicateLink {
+                        link: entry.link.clone(),
+                    });
+                }
+
+                return Err(ConfigError::Conflict {
+                    link: entry.link.clone(),
+                    existing_src: existing.src.clone(),
+                    new_src: entry.src.clone(),
+                });
+            }
+        }
+    }
+
+    for entry in entries {
+        if entries
+            .iter()
+            .any(|source_owner| paths_match(&entry.link, &source_owner.src))
+        {
+            return Err(ConfigError::LinkMatchesSourcePath {
+                path: entry.link.clone(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn paths_match(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+
+    matches!(
+        (
+            crate::paths::normalize_path_identity(left),
+            crate::paths::normalize_path_identity(right)
+        ),
+        (Ok(left), Ok(right)) if left == right
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,6 +266,15 @@ pub enum ConfigError {
 
     #[error("src must not be empty")]
     EmptySrc,
+
+    #[error("link path must not be the same as src path: {path:?}")]
+    LinkEqualsSrc { path: PathBuf },
+
+    #[error("link {link:?} is configured more than once")]
+    DuplicateLink { link: PathBuf },
+
+    #[error("link path must not also be used as a source path: {path:?}")]
+    LinkMatchesSourcePath { path: PathBuf },
 
     #[error("link {link:?} already points to {existing_src:?}, not {new_src:?}")]
     Conflict {
@@ -335,6 +419,85 @@ mod tests {
             links: vec![LinkEntry::new("links/tool", "")],
         };
         assert!(empty_src.validate().is_err());
+    }
+
+    #[test]
+    fn validation_rejects_ambiguous_link_relationships() {
+        let same_link_and_src = ConfigFile {
+            version: CURRENT_VERSION,
+            links: vec![LinkEntry::new("paths/tool", "paths/tool")],
+        };
+        assert_eq!(
+            same_link_and_src.validate(),
+            Err(ConfigError::LinkEqualsSrc {
+                path: PathBuf::from("paths/tool"),
+            })
+        );
+
+        let duplicate_link = ConfigFile {
+            version: CURRENT_VERSION,
+            links: vec![
+                LinkEntry::new("links/tool", "sources/tool"),
+                LinkEntry::new("links/tool", "sources/tool"),
+            ],
+        };
+        assert_eq!(
+            duplicate_link.validate(),
+            Err(ConfigError::DuplicateLink {
+                link: PathBuf::from("links/tool"),
+            })
+        );
+
+        let conflicting_link = ConfigFile {
+            version: CURRENT_VERSION,
+            links: vec![
+                LinkEntry::new("links/tool", "sources/tool-v1"),
+                LinkEntry::new("links/tool", "sources/tool-v2"),
+            ],
+        };
+        assert_eq!(
+            conflicting_link.validate(),
+            Err(ConfigError::Conflict {
+                link: PathBuf::from("links/tool"),
+                existing_src: PathBuf::from("sources/tool-v1"),
+                new_src: PathBuf::from("sources/tool-v2"),
+            })
+        );
+
+        let source_path_registered_as_link = ConfigFile {
+            version: CURRENT_VERSION,
+            links: vec![
+                LinkEntry::new("links/tool", "sources/tool"),
+                LinkEntry::new("sources/tool", "sources/other"),
+            ],
+        };
+        assert_eq!(
+            source_path_registered_as_link.validate(),
+            Err(ConfigError::LinkMatchesSourcePath {
+                path: PathBuf::from("sources/tool"),
+            })
+        );
+    }
+
+    #[test]
+    fn merging_entry_that_turns_a_source_path_into_a_link_is_rejected() {
+        let mut config = ConfigFile::default();
+        let original = LinkEntry::new("links/tool", "sources/tool");
+        config
+            .merge_entry(original.clone())
+            .expect("first merge should add entry");
+
+        let err = config
+            .merge_entry(LinkEntry::new("sources/tool", "sources/other"))
+            .expect_err("source path must not become a managed link");
+
+        assert_eq!(
+            err,
+            ConfigError::LinkMatchesSourcePath {
+                path: PathBuf::from("sources/tool"),
+            }
+        );
+        assert_eq!(config.links, vec![original]);
     }
 
     #[test]

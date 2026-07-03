@@ -1205,6 +1205,77 @@ fn validate_prints_english_success_for_valid_config_and_failure_for_invalid_conf
 }
 
 #[test]
+fn validate_rejects_config_where_link_path_is_also_a_source_path() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let config = temp.path().join("symbolic.json");
+    write_config(
+        &config,
+        &[
+            (
+                Path::new(".config/herdr/config.toml"),
+                Path::new("herdr/config.toml"),
+            ),
+            (
+                Path::new("herdr/config.toml"),
+                Path::new("herdr/config.toml"),
+            ),
+        ],
+    );
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "validate",
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+        ])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("invalid config")
+                .and(predicate::str::contains(
+                    "link path must not be the same as src path",
+                ))
+                .and(predicate::str::contains("herdr/config.toml")),
+        );
+}
+
+#[test]
+fn link_rejects_registering_an_existing_source_path_as_a_link_path() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let config = temp.path().join("symbolic.json");
+    let managed_link = temp.path().join(".config/herdr/config.toml");
+    let managed_src = temp.path().join("herdr/config.toml");
+    let other_src = temp.path().join("herdr/other.toml");
+    write_file(&managed_src, "managed\n");
+    write_file(&other_src, "other\n");
+    write_config(&config, &[(&managed_link, Path::new("herdr/config.toml"))]);
+
+    symcfg()
+        .current_dir(temp.path())
+        .args([
+            "link",
+            other_src.to_str().expect("utf-8 source path"),
+            managed_src.to_str().expect("utf-8 link path"),
+            "--yes",
+            "--config",
+            config.to_str().expect("utf-8 config path"),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "link path must not also be used as a source path",
+        ));
+
+    assert_eq!(
+        fs::read_to_string(&managed_src).expect("read managed source"),
+        "managed\n"
+    );
+    assert_has_entry_src(&config, &managed_link, "herdr/config.toml");
+    assert_no_entry(&config, &managed_src);
+}
+
+#[test]
 fn help_output_explains_top_level_commands_and_import_details() {
     symcfg().args(["--help"]).assert().success().stdout(
         predicate::str::contains("Manage configuration files through symbolic links")
